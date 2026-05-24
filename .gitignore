@@ -1,0 +1,15 @@
+# Archives
+*.zip
+
+# OAuth tokens and credentials
+gdrive_token.json
+gdrive_credentials.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Temp files
+/tmp/
+*.tmp

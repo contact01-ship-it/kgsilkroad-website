@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(pip3 install *)",
+      "Bash(python3 *)",
+      "Read(//Users/azemnurlanova/Documents/**)",
+      "Bash(zip -r peptide-catalog.zip peptide-catalog/)"
+    ]
+  }
+}
