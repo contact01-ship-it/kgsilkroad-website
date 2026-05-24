@@ -1021,9 +1021,441 @@ updateCart();
   }
 
   window.addEventListener('scroll', onScroll, { passive: true });
-  // Also re-run on resize (hero height may change)
   window.addEventListener('resize', onScroll, { passive: true });
-  onScroll(); // init state
+  onScroll();
+})();
+
+// ── AI ASSISTANT ─────────────────────────────────────────────────
+(function(){
+
+const style = document.createElement('style');
+style.textContent = `
+/* AI BUTTON */
+.ai-btn{
+  position:fixed;bottom:32px;right:32px;z-index:999;
+  width:62px;height:62px;
+  background:linear-gradient(135deg,#C4973A,#d4a84a);
+  border:none;border-radius:50%;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 8px 32px rgba(196,151,58,0.5),0 2px 8px rgba(0,0,0,0.3);
+  transition:all 0.35s cubic-bezier(0.34,1.56,0.64,1);
+}
+.ai-btn:hover{transform:scale(1.12);box-shadow:0 14px 44px rgba(196,151,58,0.65)}
+.ai-btn svg{width:26px;height:26px;fill:#0f1f16;transition:all 0.3s}
+.ai-btn.open svg{transform:rotate(90deg)}
+.ai-pulse{
+  position:absolute;top:-2px;right:-2px;
+  width:16px;height:16px;
+  background:#22c55e;border-radius:50%;
+  border:2.5px solid #182d20;
+}
+.ai-pulse::after{
+  content:'';position:absolute;inset:-3px;
+  background:rgba(34,197,94,0.4);border-radius:50%;
+  animation:ai-pulse-anim 2s ease-in-out infinite;
+}
+@keyframes ai-pulse-anim{0%,100%{transform:scale(1);opacity:0.8}50%{transform:scale(1.6);opacity:0}}
+
+/* AI WINDOW */
+.ai-window{
+  position:fixed;bottom:108px;right:32px;z-index:998;
+  width:390px;
+  background:#0a1810;
+  border:1px solid rgba(196,151,58,0.18);
+  display:flex;flex-direction:column;
+  box-shadow:0 32px 100px rgba(0,0,0,0.8),0 0 0 1px rgba(196,151,58,0.06);
+  transform:translateY(16px) scale(0.96);
+  opacity:0;pointer-events:none;
+  transition:all 0.35s cubic-bezier(0.34,1.2,0.64,1);
+  overflow:hidden;
+}
+.ai-window.open{transform:translateY(0) scale(1);opacity:1;pointer-events:all}
+
+/* HEADER */
+.ai-header{
+  padding:20px 22px 16px;
+  background:linear-gradient(135deg,rgba(196,151,58,0.1),rgba(31,107,69,0.06));
+  border-bottom:1px solid rgba(196,151,58,0.1);
+  display:flex;align-items:center;gap:14px;
+  position:relative;
+}
+.ai-header::after{
+  content:'';position:absolute;bottom:0;left:0;right:0;height:1px;
+  background:linear-gradient(to right,transparent,rgba(196,151,58,0.3),transparent);
+}
+.ai-avatar{
+  width:42px;height:42px;
+  background:linear-gradient(135deg,#C4973A,#1F6B45);
+  border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.2rem;flex-shrink:0;
+  box-shadow:0 4px 14px rgba(196,151,58,0.3);
+}
+.ai-header-info{flex:1;min-width:0}
+.ai-name{
+  font-family:'Cormorant Garamond',serif;
+  font-size:1.05rem;font-weight:600;
+  color:#F3EDE0;letter-spacing:0.02em;
+  margin-bottom:3px;
+}
+.ai-status{
+  font-size:0.6rem;letter-spacing:0.14em;text-transform:uppercase;
+  color:#22c55e;display:flex;align-items:center;gap:5px;
+}
+.ai-status::before{content:'';width:5px;height:5px;background:#22c55e;border-radius:50%}
+.ai-close-btn{
+  background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);
+  color:rgba(243,237,224,0.5);cursor:pointer;
+  width:30px;height:30px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:0.9rem;transition:all 0.2s;flex-shrink:0;
+}
+.ai-close-btn:hover{background:rgba(196,151,58,0.15);border-color:rgba(196,151,58,0.3);color:var(--gold)}
+
+/* LANG BAR */
+.ai-lang-bar{
+  display:flex;gap:4px;padding:10px 22px 0;
+  justify-content:flex-end;
+}
+.ai-lang-pill{
+  background:transparent;
+  border:1px solid rgba(196,151,58,0.15);
+  color:rgba(243,237,224,0.38);
+  padding:3px 10px;font-size:0.58rem;
+  letter-spacing:0.14em;text-transform:uppercase;
+  cursor:pointer;font-family:'Jost',sans-serif;
+  transition:all 0.2s;border-radius:20px;
+}
+.ai-lang-pill.active{
+  border-color:var(--gold);color:var(--gold);
+  background:rgba(196,151,58,0.08);
+}
+
+/* MESSAGES */
+.ai-msgs{
+  flex:1;overflow-y:auto;
+  padding:18px 18px 10px;
+  display:flex;flex-direction:column;gap:14px;
+  min-height:220px;max-height:320px;
+}
+.ai-msgs::-webkit-scrollbar{width:3px}
+.ai-msgs::-webkit-scrollbar-thumb{background:rgba(196,151,58,0.2);border-radius:2px}
+
+.ai-msg{max-width:88%;animation:fadeUp 0.3s ease}
+.ai-msg.bot{align-self:flex-start}
+.ai-msg.user{align-self:flex-end}
+.ai-bubble{
+  padding:11px 15px;
+  font-size:0.8rem;line-height:1.65;
+}
+.ai-msg.bot .ai-bubble{
+  background:rgba(255,255,255,0.045);
+  border:1px solid rgba(196,151,58,0.1);
+  border-radius:0 12px 12px 12px;
+  color:var(--parchment);
+}
+.ai-msg.user .ai-bubble{
+  background:linear-gradient(135deg,#C4973A,#d4a84a);
+  color:#0f1f16;font-weight:400;
+  border-radius:12px 12px 0 12px;
+}
+
+/* TYPING */
+.ai-typing{
+  display:flex;gap:5px;padding:12px 16px;
+  background:rgba(255,255,255,0.04);
+  border:1px solid rgba(196,151,58,0.09);
+  border-radius:0 12px 12px 12px;
+  align-self:flex-start;width:fit-content;
+}
+.ai-typing span{
+  width:7px;height:7px;
+  background:rgba(196,151,58,0.5);border-radius:50%;
+  animation:ai-bounce 1.2s infinite;
+}
+.ai-typing span:nth-child(2){animation-delay:0.18s}
+.ai-typing span:nth-child(3){animation-delay:0.36s}
+@keyframes ai-bounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-7px)}}
+
+/* QUICK BUTTONS */
+.ai-quick{
+  display:flex;flex-wrap:wrap;gap:6px;
+  padding:12px 18px;
+  border-top:1px solid rgba(196,151,58,0.07);
+  background:rgba(0,0,0,0.15);
+}
+.ai-quick-btn{
+  background:rgba(255,255,255,0.035);
+  border:1px solid rgba(196,151,58,0.15);
+  color:rgba(243,237,224,0.7);
+  padding:6px 12px;font-size:0.62rem;
+  letter-spacing:0.06em;cursor:pointer;
+  font-family:'Jost',sans-serif;
+  transition:all 0.25s;border-radius:20px;
+  white-space:nowrap;
+}
+.ai-quick-btn:hover{
+  background:rgba(196,151,58,0.1);
+  border-color:rgba(196,151,58,0.35);
+  color:var(--gold);transform:translateY(-1px);
+}
+
+/* INPUT */
+.ai-input-row{
+  padding:14px 18px;
+  border-top:1px solid rgba(196,151,58,0.09);
+  display:flex;gap:8px;align-items:center;
+  background:rgba(0,0,0,0.2);
+}
+.ai-inp{
+  flex:1;
+  background:rgba(255,255,255,0.05);
+  border:1px solid rgba(196,151,58,0.14);
+  border-radius:24px;
+  padding:10px 16px;
+  font-family:'Jost',sans-serif;font-size:0.78rem;
+  color:var(--parchment);outline:none;
+  transition:border-color 0.3s;
+}
+.ai-inp::placeholder{opacity:0.3;font-size:0.75rem}
+.ai-inp:focus{border-color:rgba(196,151,58,0.42)}
+.ai-send{
+  background:linear-gradient(135deg,#C4973A,#d4a84a);
+  border:none;
+  width:38px;height:38px;border-radius:50%;
+  cursor:pointer;color:#0f1f16;
+  display:flex;align-items:center;justify-content:center;
+  transition:all 0.3s;flex-shrink:0;
+  box-shadow:0 4px 14px rgba(196,151,58,0.35);
+}
+.ai-send:hover{transform:scale(1.08);box-shadow:0 6px 20px rgba(196,151,58,0.5)}
+.ai-send:disabled{opacity:0.35;cursor:not-allowed;transform:none}
+.ai-send svg{width:16px;height:16px;fill:#0f1f16}
+
+@media(max-width:480px){
+  .ai-window{width:calc(100vw - 20px);right:10px;bottom:88px}
+  .ai-btn{bottom:18px;right:18px;width:56px;height:56px}
+}
+`;
+document.head.appendChild(style);
+
+// BUTTON
+const btn = document.createElement('button');
+btn.className = 'ai-btn';
+btn.innerHTML = `
+  <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
+  <div class="ai-pulse"></div>`;
+document.body.appendChild(btn);
+
+// WINDOW
+const win = document.createElement('div');
+win.className = 'ai-window';
+win.innerHTML = `
+<div class="ai-header">
+  <div class="ai-avatar">✦</div>
+  <div class="ai-header-info">
+    <div class="ai-name">KG Silkroad</div>
+    <div class="ai-status">Онлайн 24/7</div>
+  </div>
+  <button class="ai-close-btn" id="ai-close">✕</button>
+</div>
+<div class="ai-lang-bar">
+  <button class="ai-lang-pill active" onclick="setAiLang('ru',this)">RU</button>
+  <button class="ai-lang-pill" onclick="setAiLang('en',this)">EN</button>
+  <button class="ai-lang-pill" onclick="setAiLang('kg',this)">KG</button>
+</div>
+<div class="ai-msgs" id="ai-msgs"></div>
+<div class="ai-quick" id="ai-quick">
+  <button class="ai-quick-btn" onclick="sendQuick(this.textContent)">💊 Витамины</button>
+  <button class="ai-quick-btn" onclick="sendQuick(this.textContent)">🧬 Пептиды</button>
+  <button class="ai-quick-btn" onclick="sendQuick(this.textContent)">💪 Спортпит</button>
+  <button class="ai-quick-btn" onclick="sendQuick(this.textContent)">📦 Условия</button>
+  <button class="ai-quick-btn" onclick="sendQuick(this.textContent)">💵 Цены</button>
+  <button class="ai-quick-btn" onclick="sendQuick(this.textContent)">🚚 Доставка</button>
+</div>
+<div class="ai-input-row">
+  <input class="ai-inp" id="ai-inp" placeholder="Напишите вопрос...">
+  <button class="ai-send" id="ai-send">
+    <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+  </button>
+</div>`;
+document.body.appendChild(win);
+
+// STATE
+let isOpen = false;
+let aiLang = 'ru';
+let chatHistory = [];
+let isLoading = false;
+
+const SYSTEM_PROMPT = `Ты — профессиональный AI-ассистент компании KG Silkroad Inc. Ты помогаешь клиентам узнать о продуктах, ценах и условиях сотрудничества.
+
+О КОМПАНИИ:
+- KG Silkroad Inc. — официальный дистрибьютор американских и европейских брендов витаминов, спортивного питания и пептидов
+- Поставки из США напрямую
+- Контакт: contact01@kgsilkroad.com | +1 (267) 773-0711 | WhatsApp: +12677730711
+- Instagram: @silkroad.vitamins
+
+КАТАЛОГ:
+- Витамины и нутрицевтики: KAL, Solaray, NOW Foods, Solgar, Thorne, Jarrow, Nordic Naturals, Garden of Life, Rainbow Light и 60+ брендов
+- Спортивное питание: Redcon1, JNX Sports, 1UP Nutrition, Rule 1, Bucked Up, RYSE, Nutrex и другие
+- Пептиды: 59 позиций из США — BPC-157, Semaglutide, Tirzepatide, AOD-9604, Ipamorelin, 5-Amino-1MQ и другие. Чистота ≥98%
+
+УСЛОВИЯ:
+- Минимальный заказ: от $4,000 на каждый бренд
+- Скидки при заказе свыше $8,000 на один бренд
+- Цены обновляются в последний день каждого месяца
+- Оплата в USD
+- Логистика и таможня рассчитываются отдельно по запросу
+- Заказы принимаются 24/7
+
+О БРЕНДАХ:
+- KAL Vitamins: американский бренд с 1932 года, без ГМО, натуральные ингредиенты
+- NOW Foods: один из крупнейших производителей нутрицевтиков США
+- Solaray: широкий ассортимент растительных и витаминных добавок
+- Solgar: премиальные витамины с 1947 года
+- Thorne: профессиональные добавки для спортсменов
+- Redcon1: спортивное питание военного класса
+- JNX Sports: инновационное спортивное питание
+
+О ПЕПТИДАХ:
+- BPC-157: регенерация тканей, ЖКТ, нейропротекция. 5мг
+- Semaglutide: агонист GLP-1, метаболические исследования
+- Tirzepatide: двойной агонист GIP/GLP-1
+- AOD-9604: фрагмент гормона роста, жировой метаболизм
+- Ipamorelin: секретагог гормона роста
+- 5-Amino-1MQ: ингибитор NNMT, энергетический обмен
+
+ВАЖНО:
+- Всегда отвечай тепло и профессионально как живой человек
+- Когда клиент хочет сделать заказ, узнать цену или условия — в конце ответа добавь фразу: "SHOW_WHATSAPP"
+- Если не знаешь точного ответа — предложи связаться через WhatsApp
+- Можешь отвечать на русском, английском и кыргызском языках
+- При вопросе о цене конкретного продукта — назови что цены указаны на сайте и зависят от объёма`;
+
+function setAiLang(lang, btn){
+  aiLang = lang;
+  document.querySelectorAll('.ai-lang-pill').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const placeholders = {ru:'Напишите вопрос...', en:'Ask a question...', kg:'Суроо жазыңыз...'};
+  document.getElementById('ai-inp').placeholder = placeholders[lang];
+}
+window.setAiLang = setAiLang;
+
+function toggleAI(){
+  isOpen = !isOpen;
+  btn.classList.toggle('open', isOpen);
+  win.classList.toggle('open', isOpen);
+  btn.innerHTML = isOpen ? '<span style="font-size:1.1rem">✕</span>' : '<span>💬</span><div class="ai-pulse"></div>';
+  if(isOpen && chatHistory.length === 0) showWelcome();
+}
+
+function showWelcome(){
+  const welcomes = {
+    ru: 'Здравствуйте! Я ассистент KG Silkroad. 👋\n\nМогу помочь вам:\n• Узнать о продуктах и брендах\n• Информация о пептидах и их применении\n• Условия заказа и доставки\n• Цены и каталог\n\nЧто вас интересует?',
+    en: 'Hello! I\'m KG Silkroad assistant. 👋\n\nI can help you:\n• Learn about products and brands\n• Information about peptides\n• Order and delivery terms\n• Pricing and catalog\n\nWhat are you interested in?',
+    kg: 'Саламатсызбы! Мен KG Silkroad ассистентимин. 👋\n\nМен жардам бере алам:\n• Продуктылар жана бренддер жөнүндө\n• Заказ шарттары\n• Баалар жана каталог\n\nЭмне кызыктырат?'
+  };
+  addMsg('bot', welcomes[aiLang] || welcomes.ru);
+}
+
+function addMsg(role, text){
+  const msgs = document.getElementById('ai-msgs');
+  const div = document.createElement('div');
+  div.className = `ai-msg ${role}`;
+  div.innerHTML = `<div class="ai-bubble">${text.replace(/\n/g,'<br>')}</div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  if(role === 'user') document.getElementById('ai-quick').style.display = 'none';
+}
+
+function showTyping(){
+  const msgs = document.getElementById('ai-msgs');
+  const div = document.createElement('div');
+  div.className = 'ai-typing';
+  div.id = 'ai-typing';
+  div.innerHTML = '<span></span><span></span><span></span>';
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function hideTyping(){
+  const t = document.getElementById('ai-typing');
+  if(t) t.remove();
+}
+
+async function sendMsg(text){
+  if(!text.trim() || isLoading) return;
+  isLoading = true;
+  document.getElementById('ai-send').disabled = true;
+  document.getElementById('ai-inp').value = '';
+
+  addMsg('user', text);
+  chatHistory.push({role:'user', content: text});
+  showTyping();
+
+  const langNote = aiLang === 'kg' ? ' (Кыргыз тилинде жооп бер)' : aiLang === 'en' ? ' (Reply in English)' : '';
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT + langNote,
+        messages: chatHistory
+      })
+    });
+    const data = await res.json();
+    let reply = data.content?.[0]?.text || 'Извините, попробуйте снова.';
+    chatHistory.push({role:'assistant', content: reply});
+    hideTyping();
+
+    // Check if WhatsApp button needed
+    const showWA = reply.includes('SHOW_WHATSAPP');
+    reply = reply.replace('SHOW_WHATSAPP', '').trim();
+
+    addMsg('bot', reply);
+
+    if(showWA){
+      const waTexts = {
+        ru: '💬 Написать в WhatsApp',
+        en: '💬 Write on WhatsApp',
+        kg: '💬 WhatsApp жазуу'
+      };
+      const msgs = document.getElementById('ai-msgs');
+      const waDiv = document.createElement('div');
+      waDiv.style.cssText = 'align-self:flex-start;margin-top:4px';
+      waDiv.innerHTML = `<a href="https://wa.me/12677730711" target="_blank" style="display:inline-flex;align-items:center;gap:6px;background:rgba(37,211,102,0.12);border:1px solid rgba(37,211,102,0.3);color:#25d166;padding:8px 14px;font-family:Jost,sans-serif;font-size:0.72rem;letter-spacing:0.1em;text-decoration:none;transition:all 0.3s" onmouseover="this.style.background='rgba(37,211,102,0.22)'" onmouseout="this.style.background='rgba(37,211,102,0.12)'">${waTexts[aiLang]||waTexts.ru}</a>`;
+      msgs.appendChild(waDiv);
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+  } catch(e) {
+    hideTyping();
+    const errMsgs = {
+      ru: 'Ошибка соединения. Напишите нам напрямую: contact01@kgsilkroad.com',
+      en: 'Connection error. Contact us: contact01@kgsilkroad.com',
+      kg: 'Туташуу катасы. Бизге жазыңыз: contact01@kgsilkroad.com'
+    };
+    addMsg('bot', errMsgs[aiLang] || errMsgs.ru);
+  }
+
+  isLoading = false;
+  document.getElementById('ai-send').disabled = false;
+}
+
+function sendQuick(text){ sendMsg(text); }
+window.sendQuick = sendQuick;
+
+btn.addEventListener('click', toggleAI);
+document.getElementById('ai-close').addEventListener('click', toggleAI);
+document.getElementById('ai-send').addEventListener('click', ()=>{
+  sendMsg(document.getElementById('ai-inp').value);
+});
+document.getElementById('ai-inp').addEventListener('keydown', e=>{
+  if(e.key === 'Enter') sendMsg(e.target.value);
+});
+
 })();
 </script>
 </body>
