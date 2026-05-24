@@ -494,20 +494,20 @@ html[data-lang="ru"] [data-en]{display:none}
   <div class="terms-grid">
     <div class="term-card reveal reveal-delay-1" onclick="openTerms('order')">
       <span class="term-icon">📦</span>
-      <div class="term-title"><span data-ru>Объём и условия</span><span data-en>Volume & Terms</span></div>
-      <p class="term-desc"><span data-ru>Индивидуальный подход к каждому партнёру. Чем больше объём — тем выгоднее цена.</span><span data-en>Individual approach to each partner. The larger the volume, the better the price.</span></p>
+      <div class="term-title"><span data-ru>Минимальный заказ</span><span data-en>Minimum Order</span></div>
+      <p class="term-desc"><span data-ru>От $4,000 на каждый бренд. Чем больше объём — тем выгоднее условия. Принимаем заказы 24/7.</span><span data-en>From $4,000 per brand. The larger the volume, the better the terms. Orders accepted 24/7.</span></p>
       <span class="term-cta"><span data-ru>Подробнее →</span><span data-en>Learn more →</span></span>
     </div>
     <div class="term-card reveal reveal-delay-2" onclick="openTerms('pricing')">
-      <span class="term-icon">💵</span>
-      <div class="term-title"><span data-ru>Цены и прайсы</span><span data-en>Pricing</span></div>
-      <p class="term-desc"><span data-ru>Цены на сайте актуальны. Логистика и таможня рассчитываются отдельно. Оплата в USD.</span><span data-en>Site prices are current. Logistics and customs calculated separately. Payment in USD.</span></p>
+      <span class="term-icon">🔄</span>
+      <div class="term-title"><span data-ru>Актуальные цены</span><span data-en>Current Pricing</span></div>
+      <p class="term-desc"><span data-ru>Прайсы обновляются в последний день каждого месяца. Цены фиксируются на момент подтверждения заказа. Оплата в USD.</span><span data-en>Price lists updated on the last day of each month. Prices are fixed at order confirmation. Payment in USD.</span></p>
       <span class="term-cta"><span data-ru>Подробнее →</span><span data-en>Learn more →</span></span>
     </div>
     <div class="term-card reveal reveal-delay-3" onclick="openTerms('partner')">
       <span class="term-icon">🤝</span>
-      <div class="term-title"><span data-ru>Партнёрская программа</span><span data-en>Partner Program</span></div>
-      <p class="term-desc"><span data-ru>Персональный менеджер, ежемесячные обновления прайсов, первый доступ к новинкам.</span><span data-en>Personal manager, monthly price updates, first access to new products.</span></p>
+      <div class="term-title"><span data-ru>Долгосрочное партнёрство</span><span data-en>Long-term Partnership</span></div>
+      <p class="term-desc"><span data-ru>Постоянным клиентам — приоритетные условия, первый доступ к новым позициям и специальные цены при регулярных заказах.</span><span data-en>Regular clients get priority terms, first access to new products and special pricing for recurring orders.</span></p>
       <span class="term-cta"><span data-ru>Подробнее →</span><span data-en>Learn more →</span></span>
     </div>
   </div>
@@ -794,45 +794,45 @@ function toggleNav(){
 // TERMS MODAL
 const termsContent={
   order:{
-    ru:{title:'Объём и условия заказа',rows:[
-      {icon:'📦',h:'Минимальный заказ',p:'Минимальная сумма заказа обсуждается индивидуально в зависимости от бренда и направления.'},
-      {icon:'💰',h:'Гибкость цен',p:'Чем больше объём заказа — тем выгоднее цена. Скидки предоставляются при постоянном сотрудничестве.'},
-      {icon:'🔄',h:'Возможные изменения',p:'В связи с политикой производителей цены могут изменяться. Актуальные цены всегда подтверждаются перед оформлением заказа.'},
-      {icon:'🕐',h:'Приём заказов 24/7',p:'Запросы принимаются круглосуточно. Ответ — в течение 24 часов в рабочие дни.'}
+    ru:{title:'Минимальный заказ и условия',rows:[
+      {icon:'📦',h:'Минимальный заказ',p:'От $4,000 на каждый бренд. Заказы по нескольким брендам суммируются отдельно по каждому.'},
+      {icon:'💰',h:'Скидки при объёме',p:'При заказе свыше $8,000 на один бренд — предоставляются улучшенные условия. Детали обсуждаются индивидуально.'},
+      {icon:'🕐',h:'Заказы 24/7',p:'Принимаем запросы круглосуточно. Ответ в течение 24 часов. AI-ассистент отвечает в любое время.'},
+      {icon:'🔄',h:'Гибкий подход',p:'Условия обсуждаются индивидуально для каждого партнёра в зависимости от объёма и регулярности заказов.'}
     ]},
-    en:{title:'Volume & Order Terms',rows:[
-      {icon:'📦',h:'Minimum Order',p:'Minimum order amount is discussed individually depending on brand and product line.'},
-      {icon:'💰',h:'Volume Pricing',p:'The larger the order — the better the price. Discounts available for regular partners.'},
-      {icon:'🔄',h:'Price Changes',p:'Prices may change due to manufacturer policy. Current prices are always confirmed before order processing.'},
-      {icon:'🕐',h:'Orders 24/7',p:'Requests accepted around the clock. Response within 24 hours on business days.'}
+    en:{title:'Minimum Order & Terms',rows:[
+      {icon:'📦',h:'Minimum Order',p:'From $4,000 per brand. Orders across multiple brands are calculated separately for each.'},
+      {icon:'💰',h:'Volume Discounts',p:'Orders above $8,000 per brand qualify for improved terms. Details discussed individually.'},
+      {icon:'🕐',h:'Orders 24/7',p:'We accept requests around the clock. Response within 24 hours. AI assistant available anytime.'},
+      {icon:'🔄',h:'Flexible Approach',p:'Terms are discussed individually for each partner depending on volume and order frequency.'}
     ]}
   },
   pricing:{
-    ru:{title:'Цены и прайсы',rows:[
+    ru:{title:'Цены и обновление прайсов',rows:[
       {icon:'💵',h:'Цены на сайте',p:'Все цены на сайте актуальны и включают нашу маржу. Цены указаны в долларах США (USD).'},
-      {icon:'📅',h:'Обновление прайсов',p:'Прайс-листы обновляются ежемесячно в соответствии с изменениями цен производителей.'},
-      {icon:'🚚',h:'Логистика отдельно',p:'Стоимость доставки, таможенное оформление и прочие расходы рассчитываются индивидуально после запроса и указываются в инвойсе.'},
-      {icon:'💳',h:'Оплата',p:'Оплата в USD. Условия оплаты обсуждаются индивидуально с каждым партнёром.'}
+      {icon:'📅',h:'Обновление прайсов',p:'Прайс-листы обновляются в последний день каждого месяца. Цены могут меняться в зависимости от производителя.'},
+      {icon:'✅',h:'Фиксация цены',p:'Цена фиксируется на момент подтверждения заказа. Изменения после подтверждения не применяются.'},
+      {icon:'🚚',h:'Логистика отдельно',p:'Стоимость доставки, таможня и прочие расходы рассчитываются индивидуально после запроса и указываются в инвойсе.'}
     ]},
-    en:{title:'Pricing',rows:[
+    en:{title:'Pricing & Price Updates',rows:[
       {icon:'💵',h:'Site Prices',p:'All prices on the site are current and include our margin. Prices are in USD.'},
-      {icon:'📅',h:'Price Updates',p:'Price lists are updated monthly according to manufacturer price changes.'},
-      {icon:'🚚',h:'Logistics Separate',p:'Shipping, customs clearance and other costs are calculated individually and specified in the invoice.'},
-      {icon:'💳',h:'Payment',p:'Payment in USD. Payment terms are discussed individually with each partner.'}
+      {icon:'📅',h:'Monthly Updates',p:'Price lists are updated on the last day of each month. Prices may change depending on the manufacturer.'},
+      {icon:'✅',h:'Price Lock',p:'Price is locked at order confirmation. Changes after confirmation do not apply.'},
+      {icon:'🚚',h:'Logistics Separate',p:'Shipping, customs and other costs are calculated individually after request and specified in the invoice.'}
     ]}
   },
   partner:{
-    ru:{title:'Партнёрская программа',rows:[
-      {icon:'👤',h:'Персональный менеджер',p:'Каждому постоянному партнёру назначается персональный менеджер для оперативного решения всех вопросов.'},
-      {icon:'🎯',h:'Приоритетный доступ',p:'Постоянные партнёры получают первый доступ к новым позициям и эксклюзивным предложениям.'},
-      {icon:'📊',h:'Лучшие условия',p:'Долгосрочное сотрудничество открывает доступ к улучшенным ценовым условиям и гибким срокам.'},
-      {icon:'📲',h:'Прямая связь',p:'Прямой контакт через WhatsApp для оперативной коммуникации и быстрого решения вопросов.'}
+    ru:{title:'Долгосрочное партнёрство',rows:[
+      {icon:'🎯',h:'Приоритетные условия',p:'Постоянным клиентам — улучшенные ценовые условия и скидки при регулярных заказах.'},
+      {icon:'🚀',h:'Первый доступ',p:'Партнёры получают первый доступ к новым позициям и эксклюзивным предложениям до публикации на сайте.'},
+      {icon:'📲',h:'Прямая связь',p:'Прямой контакт через WhatsApp и Email для оперативного решения всех вопросов.'},
+      {icon:'📊',h:'Индивидуальные условия',p:'Чем дольше и активнее сотрудничество — тем выгоднее условия. Обсуждаем индивидуально с каждым партнёром.'}
     ]},
-    en:{title:'Partner Program',rows:[
-      {icon:'👤',h:'Personal Manager',p:'Each regular partner is assigned a personal manager for prompt resolution of all issues.'},
-      {icon:'🎯',h:'Priority Access',p:'Regular partners get first access to new products and exclusive offers.'},
-      {icon:'📊',h:'Best Terms',p:'Long-term partnership opens access to improved pricing conditions and flexible terms.'},
-      {icon:'📲',h:'Direct Contact',p:'Direct WhatsApp contact for quick communication and fast issue resolution.'}
+    en:{title:'Long-term Partnership',rows:[
+      {icon:'🎯',h:'Priority Terms',p:'Regular clients get improved pricing and discounts for recurring orders.'},
+      {icon:'🚀',h:'Early Access',p:'Partners get first access to new products and exclusive offers before site publication.'},
+      {icon:'📲',h:'Direct Contact',p:'Direct WhatsApp and Email contact for quick resolution of all questions.'},
+      {icon:'📊',h:'Individual Terms',p:'The longer and more active the partnership — the better the terms. Discussed individually with each partner.'}
     ]}
   }
 };
