@@ -145,6 +145,21 @@ function renderBrands(q=''){
   }).join('');
 }
 
+// Init — read tab from URL
+(function(){
+  const params = new URLSearchParams(window.location.search);
+  const tab = params.get('tab');
+  if(tab === 'sports'){
+    currentTab = 'sports';
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.tab')[2].classList.add('active');
+  } else if(tab === 'vitamins'){
+    currentTab = 'vitamins';
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.tab')[1].classList.add('active');
+  }
+})();
+
 renderBrands();
 </script>
 </body>
