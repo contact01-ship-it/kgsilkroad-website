@@ -1,306 +1,640 @@
-<!DOCTYPE html>
-<html lang="ru" data-lang="ru">
-<head>
+<!DOCTYPE html><html lang="ru" data-lang="ru"><head>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.13/html-to-image.min.js" integrity="sha512-iZ2ORl595Wx6miw+GuadDet4WQbdSWS3JLMoNfY8cRGoEFy6oT3G9IbcrBeL6AfkgpA51ETt/faX6yLV+/gFJg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script>
+      (function() {
+        const originalConsole = window.console;
+        window.console = {
+          log: (...args) => {
+            originalConsole.log(...args);
+            window.parent.postMessage({ type: 'console', message: args.join(' ') }, '*');
+          },
+          error: (...args) => {
+            originalConsole.error(...args);
+            window.parent.postMessage({ type: 'console', message: 'Error: ' + args.join(' ') }, '*');
+          },
+          warn: (...args) => {
+            originalConsole.warn(...args);
+            window.parent.postMessage({ type: 'console', message: 'Warning: ' + args.join(' ') }, '*');
+          }
+        };
+
+        let requestId = 0;
+        let callbacksMap = new Map();
+        let streamControllers = new Map();
+        
+        window.claude = {
+          complete: (prompt) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'claudeComplete', id, prompt }, '*');
+            });
+          }
+        };
+
+        window.storage = {
+          get: (key, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageGet', id, key, shared }, '*');
+            });
+          },
+          set: (key, value, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageSet', id, key, value, shared }, '*');
+            });
+          },
+          delete: (key, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageDelete', id, key, shared }, '*');
+            });
+          },
+          list: (prefix, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageList', id, prefix, shared }, '*');
+            });
+          }
+        };
+
+        let pendingBlobs = new Map();
+        URL.createObjectURL = (blob) => {
+          // Store the blob and create an ID and URL for it
+          const blobId = `blob-${Date.now()}-${Math.random()}`;
+          pendingBlobs.set(blobId, blob);
+          return `blob-request://${blobId}`;
+        };
+
+        URL.revokeObjectURL = (url) => {
+          // Remove the blob from our store
+          const blobId = url.replace("blob-request://", "");
+          pendingBlobs.delete(blobId);
+        };
+
+        const getBlobFromURL = (url) => {
+          const blobId = url.replace("blob-request://", "");
+          return pendingBlobs.get(blobId);
+        };
+
+        // Override global fetch with streaming support
+        window.fetch = (url, init = {}) => {
+          return new Promise((resolve, reject) => {
+            const id = requestId++;
+            const channelId = `fetch-${id}-${Date.now()}`;
+            
+            callbacksMap.set(id, { 
+              resolve: (response) => {
+                // Create a ReadableStream for the response body
+                const stream = new ReadableStream({
+                  start(controller) {
+                    streamControllers.set(channelId, controller);
+                  },
+                  cancel() {
+                    streamControllers.delete(channelId);
+                  }
+                });
+                
+                // Create and return the Response with the stream
+                resolve(new Response(stream, {
+                  status: response.status,
+                  statusText: response.statusText,
+                  headers: response.headers
+                }));
+              },
+              reject,
+              channelId
+            });
+            
+            window.parent.postMessage({
+              type: 'proxyFetch',
+              id,
+              url,
+              init,
+              channelId
+            }, '*');
+          });
+        };
+
+        window.addEventListener('message', async (event) => {
+          if (event.data.type === 'takeScreenshot') {
+            const rootElement = document.getElementById('artifacts-component-root-html');
+            if (!rootElement) {
+              window.parent.postMessage({
+                type: 'screenshotError',
+                error: new Error('Root element not found'),
+              }, '*');
+              return;
+            }
+            // Catch CDN load failures (htmlToImage undefined) and toPng errors
+            // so the parent always gets a response instead of hanging forever.
+            try {
+              const screenshot = await htmlToImage.toPng(rootElement, {
+                imagePlaceholder:
+                  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAA1JREFUGFdjePDgwX8ACOQDoNsk0PMAAAAASUVORK5CYII=",
+              });
+              window.parent.postMessage({
+                type: 'screenshotData',
+                data: screenshot,
+              }, '*');
+            } catch (err) {
+              window.parent.postMessage({
+                type: 'screenshotError',
+                error: err instanceof Error ? err : new Error(String(err)),
+              }, '*');
+            }
+          } else if (event.data.type === 'claudeComplete') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.completion);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'proxyFetchResponse') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+              callbacksMap.delete(event.data.id);
+            } else {
+              // Initial response with headers, status, etc.
+              callback.resolve({
+                status: event.data.status,
+                statusText: event.data.statusText,
+                headers: event.data.headers
+              });
+              // Don't delete the callback yet if streaming
+              if (!event.data.body) {
+                callbacksMap.delete(event.data.id);
+              }
+            }
+          } else if (event.data.type === 'proxyFetchStream') {
+            // Handle streaming data chunks
+            const controller = streamControllers.get(event.data.channelId);
+            if (controller) {
+              if (event.data.error) {
+                controller.error(new Error(event.data.error));
+                streamControllers.delete(event.data.channelId);
+              } else if (event.data.done) {
+                controller.close();
+                streamControllers.delete(event.data.channelId);
+                // Clean up the callback
+                const callback = Array.from(callbacksMap.entries()).find(
+                  ([_, value]) => value.channelId === event.data.channelId
+                );
+                if (callback) {
+                  callbacksMap.delete(callback[0]);
+                }
+              } else if (event.data.chunk) {
+                controller.enqueue(new Uint8Array(event.data.chunk));
+              }
+            }
+          } else if (event.data.type === 'storageGet') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageSet') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageDelete') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageList') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          }
+        });
+
+        window.addEventListener('click', (event) => {
+          const isEl = event.target instanceof HTMLElement;
+          if (!isEl) return;
+    
+          // find ancestor links
+          const linkEl = event.target.closest("a");
+          if (!linkEl || !linkEl.href) return;
+    
+          event.preventDefault();
+          event.stopImmediatePropagation();
+    
+          if (linkEl.href.startsWith("blob-request:")) {
+            const blob = getBlobFromURL(linkEl.href);
+            if (!blob) return;
+            void blob.arrayBuffer().then((data) => {
+              window.parent.postMessage({
+                type: "downloadFile",
+                filename: linkEl.download,
+                data,
+                mimeType: blob.type || "application/octet-stream",
+              });
+            });
+          } else if (linkEl.href.startsWith("data:")) {
+            const [header, base64Data] = linkEl.href.split(",");
+            const mimeMatch = header.match(/data:([^;]+)/);
+            const mimeType = mimeMatch ? mimeMatch[1] : "application/octet-stream";
+            const binaryString = atob(base64Data);
+            const data = Uint8Array.from(binaryString, (c) =>
+              c.charCodeAt(0),
+            ).buffer;
+            window.parent.postMessage({
+              type: "downloadFile",
+              filename: linkEl.download,
+              data,
+              mimeType,
+            });
+          } else {
+            let linkUrl;
+            try {
+              linkUrl = new URL(linkEl.href);
+            } catch (error) {
+              return;
+            }
+    
+            if (linkUrl.hostname === window.location.hostname) return;
+      
+            window.parent.postMessage({
+              type: 'openExternal',
+              href: linkEl.href,
+            }, '*');
+          }
+      });
+
+        const originalOpen = window.open;
+        window.open = function (url) {
+          window.parent.postMessage({
+            type: "openExternal",
+            href: url,
+          }, "*");
+        };
+
+        window.addEventListener('error', (event) => {
+          window.parent.postMessage({ type: 'console', message: 'Uncaught Error: ' + event.message }, '*');
+        });
+      })();
+    </script>
+  
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>KG Silkroad Inc. — Vitamins, Sports Nutrition & Peptides</title>
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,400;1,600&family=Jost:wght@200;300;400;500;600&display=swap" rel="stylesheet">
+<title>KG Silkroad Inc. — Витамины, спортпит и пептиды</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,400;1,600&amp;family=Jost:wght@200;300;400;500;600&amp;display=swap" rel="stylesheet">
 <style>
-:root {
-  --deep: #0f1f16;
-  --forest: #182d20;
-  --forest2: #1e3628;
-  --gold: #C4973A;
-  --gold-l: #d4a84a;
-  --gold-dim: rgba(196,151,58,0.15);
-  --emerald: #1F6B45;
-  --parchment: #F3EDE0;
-  --parchment-dim: rgba(243,237,224,0.55);
-  --white: #ffffff;
+:root{
+  --deep:#0f1f16;--forest:#182d20;--forest2:#1e3628;
+  --gold:#C4973A;--gold-l:#d4a84a;--gold-dim:rgba(196,151,58,0.15);
+  --emerald:#1F6B45;--parchment:#F3EDE0;
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{background:var(--forest);color:var(--parchment);font-family:'Jost',sans-serif;font-weight:300;overflow-x:hidden;cursor:default}
+body{background:var(--forest);color:var(--parchment);font-family:'Jost',sans-serif;font-weight:300;overflow-x:hidden}
 
-/* CANVAS */
-#canvas{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0.85}
+#canvas{position:fixed;inset:0;z-index:0;pointer-events:none}
+nav,section,.logistics-strip,footer,.overlay,.cart-drawer,.lang-bar{position:relative;z-index:2}
 
-/* SCROLL REVEAL */
-.reveal{opacity:0;transform:translateY(40px);transition:opacity 0.8s ease,transform 0.8s ease}
+/* LANG BAR */
+.lang-bar{position:fixed;top:0;left:0;right:0;z-index:200;display:flex;justify-content:flex-end;align-items:center;padding:6px 40px;background:rgba(15,31,22,0.97);border-bottom:1px solid rgba(196,151,58,0.08);gap:12px}
+.lang-btn{background:none;border:none;color:var(--parchment);cursor:pointer;opacity:0.5;font-family:'Jost',sans-serif;font-size:0.65rem;letter-spacing:0.18em;text-transform:uppercase;transition:all 0.3s;padding:2px 6px}
+.lang-btn.active{opacity:1;color:var(--gold);border-bottom:1px solid var(--gold)}
+.lang-sep{opacity:0.2;font-size:0.6rem}
+.ig-link{display:flex;align-items:center;gap:6px;color:var(--parchment);text-decoration:none;font-size:0.65rem;letter-spacing:0.1em;opacity:0.45;transition:opacity 0.3s;margin-right:auto}
+.ig-link:hover{opacity:0.9;color:var(--gold)}
+.ig-link svg{width:14px;height:14px;fill:currentColor}
+
+/* NAV */
+nav{position:fixed;top:30px;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:16px 40px;background:linear-gradient(to bottom,rgba(15,31,22,0.97) 60%,transparent);backdrop-filter:blur(16px);border-bottom:1px solid rgba(196,151,58,0.07)}
+.nav-logo{display:flex;align-items:center;gap:12px;text-decoration:none;flex-shrink:0}
+.nav-logo svg{width:36px;height:36px;filter:drop-shadow(0 0 8px rgba(196,151,58,0.3))}
+.nav-brand{font-family:'Cormorant Garamond',serif;font-size:0.95rem;font-weight:600;letter-spacing:0.14em;color:var(--gold);text-transform:uppercase}
+.nav-links{display:flex;gap:24px;list-style:none}
+.nav-links a{color:#fff;text-decoration:none;font-size:0.72rem;letter-spacing:0.12em;text-transform:uppercase;opacity:0.85;transition:all 0.3s;text-shadow:0 1px 4px rgba(0,0,0,0.5)}
+.nav-links a:hover{opacity:1;color:var(--gold)}
+.nav-right{display:flex;gap:10px;align-items:center;flex-shrink:0}
+.nav-wa{display:flex;align-items:center;gap:7px;background:rgba(37,211,102,0.12);border:1px solid rgba(37,211,102,0.3);color:#25d166;padding:8px 16px;font-family:'Jost',sans-serif;font-size:0.68rem;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;text-decoration:none}
+.nav-wa:hover{background:rgba(37,211,102,0.22)}
+.nav-wa svg{width:13px;height:13px;fill:currentColor}
+.cart-btn{position:relative;background:none;border:1px solid rgba(196,151,58,0.35);color:var(--gold);width:38px;height:38px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all 0.3s;font-size:0.95rem}
+.cart-btn:hover{background:var(--gold-dim)}
+.cart-count{position:absolute;top:-6px;right:-6px;background:var(--gold);color:var(--deep);width:17px;height:17px;border-radius:50%;font-size:0.58rem;font-weight:600;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity 0.3s}
+.cart-count.show{opacity:1}
+.nav-cta{background:var(--gold);color:var(--deep);border:none;padding:9px 20px;font-family:'Jost',sans-serif;font-size:0.68rem;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;text-decoration:none;display:inline-block}
+.nav-cta:hover{background:var(--gold-l)}
+
+/* MOBILE NAV TOGGLE */
+.nav-toggle{display:none;background:none;border:1px solid rgba(196,151,58,0.3);color:var(--gold);width:38px;height:38px;align-items:center;justify-content:center;cursor:pointer;font-size:1.1rem}
+
+/* HERO */
+.hero{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:160px 40px 100px;text-align:center;position:relative;overflow:hidden}
+
+/* Parallax bg — fixed, fades out after text */
+.hero-img{
+  position:fixed;
+  inset:0;
+  background:linear-gradient(to bottom,rgba(10,22,15,0.4) 0%,rgba(10,22,15,0.65) 50%,rgba(15,31,22,0.97) 100%),
+    url('https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=1600&q=80') center/cover no-repeat;
+  z-index:1;
+  will-change:opacity;
+  transform:translateZ(0);
+}
+
+/* Text content — fades + drifts up first */
+.hero-inner{
+  position:relative;
+  z-index:2;
+  max-width:860px;
+  width:100%;
+  will-change:opacity,transform;
+  transform:translateZ(0);
+}
+
+/* Sections sit above fixed hero bg */
+.cat-sec,.logistics-strip,.brand-sec,.terms-sec,.how-sec,.cta-sec,footer{
+  position:relative;
+  z-index:3;
+  background-color:inherit;
+}
+
+.eyebrow{display:inline-flex;align-items:center;gap:12px;font-size:0.62rem;letter-spacing:0.28em;text-transform:uppercase;color:var(--gold);opacity:0.85;margin-bottom:28px;animation:fadeUp 1s ease both}
+.eyebrow i{width:24px;height:1px;background:var(--gold);opacity:0.45;display:block;font-style:normal}
+
+.hero-title{font-family:'Cormorant Garamond',serif;font-size:clamp(2.6rem,6vw,5.5rem);font-weight:600;line-height:1.06;margin-bottom:22px;animation:fadeUp 1s 0.12s ease both;text-shadow:0 2px 30px rgba(0,0,0,0.6)}
+.hero-title em{font-style:italic;color:var(--gold)}
+.hero-sub{font-size:clamp(0.88rem,2vw,1rem);line-height:1.9;opacity:0.7;max-width:520px;margin:0 auto 42px;animation:fadeUp 1s 0.24s ease both;text-shadow:0 1px 8px rgba(0,0,0,0.5)}
+
+.btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;animation:fadeUp 1s 0.36s ease both}
+.btn-gold{background:var(--gold);color:var(--deep);border:none;padding:14px 32px;font-family:'Jost',sans-serif;font-size:0.74rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;text-decoration:none;display:inline-block}
+.btn-gold:hover{background:var(--gold-l);box-shadow:0 10px 36px rgba(196,151,58,0.3);transform:translateY(-2px)}
+.btn-outline{background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.35);padding:14px 32px;font-family:'Jost',sans-serif;font-size:0.74rem;letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;text-decoration:none;display:inline-block}
+.btn-outline:hover{border-color:var(--gold);color:var(--gold)}
+.btn-wa-hero{background:transparent;color:#25d166;border:1px solid rgba(37,211,102,0.35);padding:14px 32px;font-family:'Jost',sans-serif;font-size:0.74rem;letter-spacing:0.12em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;text-decoration:none;display:inline-flex;align-items:center;gap:8px}
+.btn-wa-hero:hover{background:rgba(37,211,102,0.1);border-color:rgba(37,211,102,0.6)}
+.btn-wa-hero svg,.nav-wa svg{width:15px;height:15px;fill:currentColor}
+
+.hero-stats{display:flex;justify-content:center;flex-wrap:wrap;gap:0;margin-top:60px;animation:fadeUp 1s 0.48s ease both;border-top:1px solid rgba(196,151,58,0.15);border-bottom:1px solid rgba(196,151,58,0.15)}
+.stat-item{padding:24px 36px;text-align:center;border-right:1px solid rgba(196,151,58,0.12)}
+.stat-item:last-child{border-right:none}
+.stat-num{font-family:'Cormorant Garamond',serif;font-size:2.2rem;font-weight:600;color:var(--gold);display:block;line-height:1}
+.stat-lbl{font-size:0.6rem;letter-spacing:0.16em;text-transform:uppercase;opacity:0.5;margin-top:5px;display:block}
+
+/* SECTIONS */
+section{padding:90px 40px}
+.s-label{font-size:0.62rem;letter-spacing:0.26em;text-transform:uppercase;color:var(--gold);margin-bottom:12px;display:flex;align-items:center;gap:12px}
+.s-label::after{content:'';width:36px;height:1px;background:var(--gold);opacity:0.3}
+h2{font-family:'Cormorant Garamond',serif;font-size:clamp(1.8rem,3.5vw,2.8rem);font-weight:600;line-height:1.12;margin-bottom:14px}
+.s-sub{font-size:0.86rem;opacity:0.55;line-height:1.9;max-width:420px}
+
+/* REVEAL */
+.reveal{opacity:0;transform:translateY(36px);transition:opacity 0.8s ease,transform 0.8s ease}
 .reveal.visible{opacity:1;transform:translateY(0)}
 .reveal-delay-1{transition-delay:0.1s}
 .reveal-delay-2{transition-delay:0.2s}
 .reveal-delay-3{transition-delay:0.3s}
 .reveal-delay-4{transition-delay:0.4s}
 
-nav,section,footer,.overlay{position:relative;z-index:2}
-
-/* LANG TOGGLE */
-.lang-bar{position:fixed;top:0;left:0;right:0;z-index:200;display:flex;justify-content:flex-end;padding:8px 60px;background:rgba(15,31,22,0.95);border-bottom:1px solid rgba(196,151,58,0.06);font-size:0.65rem;letter-spacing:0.18em;gap:12px;align-items:center}
-.lang-btn{background:none;border:none;color:var(--parchment);cursor:pointer;opacity:0.4;font-family:'Jost',sans-serif;font-size:0.65rem;letter-spacing:0.18em;text-transform:uppercase;transition:all 0.3s;padding:2px 6px}
-.lang-btn.active{opacity:1;color:var(--gold);border-bottom:1px solid var(--gold)}
-.lang-sep{opacity:0.2;font-size:0.6rem}
-
-/* NAV */
-nav{position:fixed;top:28px;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:18px 60px;background:linear-gradient(to bottom,rgba(15,31,22,0.96) 60%,transparent);backdrop-filter:blur(16px);border-bottom:1px solid rgba(196,151,58,0.06)}
-.nav-logo{display:flex;align-items:center;gap:13px;text-decoration:none}
-.nav-logo svg{width:38px;height:38px;filter:drop-shadow(0 0 8px rgba(196,151,58,0.3))}
-.nav-brand{font-family:'Cormorant Garamond',serif;font-size:1rem;font-weight:600;letter-spacing:0.14em;color:var(--gold);text-transform:uppercase}
-.nav-links{display:flex;gap:32px;list-style:none}
-.nav-links a{color:var(--parchment);text-decoration:none;font-size:0.72rem;letter-spacing:0.14em;text-transform:uppercase;opacity:0.5;transition:all 0.3s}
-.nav-links a:hover{opacity:1;color:var(--gold)}
-.nav-right{display:flex;gap:12px;align-items:center}
-.nav-wa{display:flex;align-items:center;gap:8px;background:rgba(37,211,102,0.12);border:1px solid rgba(37,211,102,0.25);color:#25d166;padding:9px 20px;font-family:'Jost',sans-serif;font-size:0.7rem;letter-spacing:0.12em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;text-decoration:none}
-.nav-wa:hover{background:rgba(37,211,102,0.2);border-color:rgba(37,211,102,0.5)}
-.nav-wa svg{width:14px;height:14px;fill:currentColor}
-.nav-cta{background:var(--gold);color:var(--deep);border:none;padding:9px 22px;font-family:'Jost',sans-serif;font-size:0.7rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;text-decoration:none;display:inline-block}
-.nav-cta:hover{background:var(--gold-l);box-shadow:0 8px 30px rgba(196,151,58,0.25)}
-
-/* CART BADGE */
-.cart-btn{position:relative;background:none;border:1px solid rgba(196,151,58,0.3);color:var(--gold);width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all 0.3s;font-size:1rem}
-.cart-btn:hover{background:var(--gold-dim);border-color:var(--gold)}
-.cart-count{position:absolute;top:-6px;right:-6px;background:var(--gold);color:var(--deep);width:18px;height:18px;border-radius:50%;font-size:0.6rem;font-weight:600;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity 0.3s}
-.cart-count.show{opacity:1}
-
-/* HERO */
-.hero{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:160px 60px 100px;text-align:center;position:relative;overflow:hidden}
-.hero-img{position:absolute;inset:0;background:linear-gradient(to bottom,rgba(15,31,22,0.3) 0%,rgba(15,31,22,0.7) 50%,rgba(15,31,22,0.95) 100%),url('https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=1600&q=80') center/cover no-repeat;z-index:0}
-.hero-inner{position:relative;z-index:2;max-width:900px}
-
-.eyebrow{display:inline-flex;align-items:center;gap:14px;font-size:0.64rem;letter-spacing:0.3em;text-transform:uppercase;color:var(--gold);opacity:0.8;margin-bottom:30px;animation:fadeUp 1s ease both}
-.eyebrow i{width:28px;height:1px;background:var(--gold);opacity:0.4;display:block;font-style:normal}
-
-.hero-title{font-family:'Cormorant Garamond',serif;font-size:clamp(3.2rem,6.5vw,6rem);font-weight:600;line-height:1.05;margin-bottom:22px;animation:fadeUp 1s 0.12s ease both;text-shadow:0 4px 40px rgba(0,0,0,0.5)}
-.hero-title em{font-style:italic;color:var(--gold)}
-
-.hero-sub{font-size:1rem;line-height:1.9;opacity:0.55;max-width:560px;margin:0 auto 44px;animation:fadeUp 1s 0.24s ease both}
-
-.btns{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;animation:fadeUp 1s 0.36s ease both}
-.btn-gold{background:var(--gold);color:var(--deep);border:none;padding:15px 38px;font-family:'Jost',sans-serif;font-size:0.76rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;text-decoration:none;display:inline-block}
-.btn-gold:hover{background:var(--gold-l);box-shadow:0 12px 40px rgba(196,151,58,0.3);transform:translateY(-2px)}
-.btn-outline{background:transparent;color:var(--parchment);border:1px solid rgba(243,237,224,0.22);padding:15px 38px;font-family:'Jost',sans-serif;font-size:0.76rem;letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;text-decoration:none;display:inline-block}
-.btn-outline:hover{border-color:var(--gold);color:var(--gold)}
-.btn-wa{background:transparent;color:#25d166;border:1px solid rgba(37,211,102,0.3);padding:15px 38px;font-family:'Jost',sans-serif;font-size:0.76rem;letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;text-decoration:none;display:inline-flex;align-items:center;gap:8px}
-.btn-wa:hover{background:rgba(37,211,102,0.1);border-color:rgba(37,211,102,0.5)}
-.btn-wa svg{width:16px;height:16px;fill:currentColor}
-
-.hero-stats{display:flex;justify-content:center;gap:0;margin-top:70px;animation:fadeUp 1s 0.48s ease both;border-top:1px solid rgba(196,151,58,0.12);border-bottom:1px solid rgba(196,151,58,0.12)}
-.stat-item{padding:30px 50px;text-align:center;border-right:1px solid rgba(196,151,58,0.1)}
-.stat-item:last-child{border-right:none}
-.stat-num{font-family:'Cormorant Garamond',serif;font-size:2.5rem;font-weight:600;color:var(--gold);display:block;line-height:1}
-.stat-lbl{font-size:0.63rem;letter-spacing:0.18em;text-transform:uppercase;opacity:0.36;margin-top:6px;display:block}
-
-/* SECTIONS */
-section{padding:110px 60px}
-.s-label{font-size:0.63rem;letter-spacing:0.28em;text-transform:uppercase;color:var(--gold);margin-bottom:12px;display:flex;align-items:center;gap:12px}
-.s-label::after{content:'';width:40px;height:1px;background:var(--gold);opacity:0.28}
-h2{font-family:'Cormorant Garamond',serif;font-size:clamp(1.9rem,3.5vw,3rem);font-weight:600;line-height:1.12;margin-bottom:14px}
-.s-sub{font-size:0.88rem;opacity:0.42;line-height:1.9;max-width:420px}
-
 /* CATEGORIES */
 .cat-sec{background:rgba(0,0,0,0.18)}
-.cat-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:50px}
+.cat-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:44px;flex-wrap:wrap;gap:20px}
 .cat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:2px}
 .cat-card{position:relative;overflow:hidden;cursor:pointer;text-decoration:none;color:inherit;display:block;aspect-ratio:4/3}
 .cat-card.wide{grid-column:span 2;aspect-ratio:16/9}
 .cat-bg-img{position:absolute;inset:0;background-size:cover;background-position:center;transition:transform 0.6s ease}
 .cat-card:hover .cat-bg-img{transform:scale(1.06)}
-.cat-overlay{position:absolute;inset:0;transition:opacity 0.4s}
-.cat-dots{position:absolute;inset:0;background-image:radial-gradient(circle,rgba(196,151,58,0.06) 1px,transparent 1px);background-size:24px 24px;opacity:0.7}
-.cat-cnt{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:flex-end;padding:34px}
-.cat-icon{font-size:1.8rem;margin-bottom:10px}
-.cat-name{font-family:'Cormorant Garamond',serif;font-size:1.6rem;font-weight:600;margin-bottom:5px;text-shadow:0 2px 20px rgba(0,0,0,0.5)}
-.cat-meta{font-size:0.67rem;letter-spacing:0.1em;opacity:0.38;text-transform:uppercase}
-.cat-arr{position:absolute;top:24px;right:24px;width:36px;height:36px;border:1px solid rgba(196,151,58,0.28);display:flex;align-items:center;justify-content:center;color:var(--gold);font-size:0.85rem;opacity:0;transform:translateY(8px);transition:all 0.3s}
+.cat-overlay{position:absolute;inset:0}
+.cat-dots{position:absolute;inset:0;background-image:radial-gradient(circle,rgba(196,151,58,0.06) 1px,transparent 1px);background-size:24px 24px}
+.cat-cnt{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:flex-end;padding:28px}
+.cat-icon{font-size:1.6rem;margin-bottom:8px}
+.cat-name{font-family:'Cormorant Garamond',serif;font-size:1.5rem;font-weight:600;margin-bottom:4px;text-shadow:0 2px 16px rgba(0,0,0,0.7);color:#fff}
+.cat-meta{font-size:0.64rem;letter-spacing:0.1em;opacity:0.55;text-transform:uppercase;color:#fff}
+.cat-arr{position:absolute;top:20px;right:20px;width:34px;height:34px;border:1px solid rgba(196,151,58,0.3);display:flex;align-items:center;justify-content:center;color:var(--gold);font-size:0.8rem;opacity:0;transform:translateY(6px);transition:all 0.3s}
 .cat-card:hover .cat-arr{opacity:1;transform:translateY(0)}
 
-/* LOGISTICS STRIP */
-.logistics-strip{background:var(--deep);padding:80px 60px;position:relative;overflow:hidden}
-.logistics-strip .strip-bg{position:absolute;inset:0;background:url('https://images.unsplash.com/photo-1578575437130-527eed3abbec?w=1600&q=80') center/cover no-repeat;opacity:0.07}
-.logistics-inner{position:relative;z-index:2;display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center}
+/* LOGISTICS */
+.logistics-strip{background:var(--deep);padding:80px 40px;position:relative;overflow:hidden}
+.logistics-inner{position:relative;z-index:2;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center}
 .logistics-img-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .logistics-img{aspect-ratio:4/3;background-size:cover;background-position:center;position:relative;overflow:hidden}
-.logistics-img::after{content:'';position:absolute;inset:0;background:linear-gradient(to top,rgba(15,31,22,0.6),transparent)}
+.logistics-img::after{content:'';position:absolute;inset:0;background:linear-gradient(to top,rgba(15,31,22,0.5),transparent)}
 .logistics-img.tall{grid-row:span 2;aspect-ratio:auto}
 
-/* PRODUCTS */
-.prod-sec{background:var(--forest)}
-.prod-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:40px}
-.search-bar{display:flex;gap:0;width:320px}
-.search-inp{flex:1;background:rgba(255,255,255,0.04);border:1px solid rgba(196,151,58,0.12);border-right:none;padding:10px 16px;font-family:'Jost',sans-serif;font-size:0.78rem;color:var(--parchment);outline:none;transition:border-color 0.3s}
-.search-inp::placeholder{opacity:0.35}
-.search-inp:focus{border-color:rgba(196,151,58,0.35)}
-.search-btn{background:var(--gold);border:none;padding:10px 16px;cursor:pointer;color:var(--deep);font-size:0.8rem;transition:all 0.3s}
-.search-btn:hover{background:var(--gold-l)}
-
-.tabs{display:flex;gap:3px;background:rgba(0,0,0,0.2);padding:3px;margin-bottom:30px}
-.tab{padding:9px 20px;font-size:0.68rem;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;border:none;background:transparent;color:var(--parchment);opacity:0.42;transition:all 0.3s;font-family:'Jost',sans-serif}
-.tab.active{background:var(--gold);color:var(--deep);opacity:1}
-
-.pgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-.pcard{background:rgba(255,255,255,0.025);border:1px solid rgba(196,151,58,0.08);padding:24px;cursor:pointer;transition:all 0.3s;position:relative;overflow:hidden;text-decoration:none;color:inherit;display:block}
-.pcard:hover{border-color:rgba(196,151,58,0.28);transform:translateY(-4px);box-shadow:0 16px 48px rgba(0,0,0,0.4)}
-.pimg{width:100%;aspect-ratio:1;background:linear-gradient(135deg,rgba(31,107,69,0.15),rgba(15,31,22,0.4));display:flex;align-items:center;justify-content:center;font-size:2.5rem;margin-bottom:16px;border:1px solid rgba(196,151,58,0.06);position:relative;overflow:hidden}
-.ptag{font-size:0.58rem;letter-spacing:0.2em;text-transform:uppercase;color:var(--gold);opacity:0.56;margin-bottom:7px}
-.pname{font-family:'Cormorant Garamond',serif;font-size:1.15rem;font-weight:600;margin-bottom:6px;line-height:1.3}
-.psize{font-size:0.72rem;opacity:0.35;margin-bottom:14px}
-.pfooter{display:flex;align-items:center;justify-content:space-between;padding-top:14px;border-top:1px solid rgba(196,151,58,0.08)}
-.pprice{font-family:'Cormorant Garamond',serif;font-size:1.35rem;color:var(--gold)}
-.pprice small{font-size:0.62rem;font-family:'Jost',sans-serif;opacity:0.38;margin-left:2px}
-.add-cart{background:none;border:1px solid rgba(196,151,58,0.25);color:var(--gold);padding:7px 14px;font-size:0.65rem;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;font-family:'Jost',sans-serif;transition:all 0.3s}
-.add-cart:hover{background:var(--gold);color:var(--deep)}
-
-/* TABLE VIEW */
-.ptable-wrap{overflow-x:auto}
-.ptable{width:100%;border-collapse:collapse}
-.ptable th{text-align:left;font-size:0.6rem;letter-spacing:0.18em;text-transform:uppercase;color:var(--gold);opacity:0.5;padding:10px 14px;border-bottom:1px solid rgba(196,151,58,0.1)}
-.ptable td{padding:11px 14px;font-size:0.8rem;border-bottom:1px solid rgba(255,255,255,0.04);opacity:0.72}
-.ptable tr:hover td{background:rgba(196,151,58,0.04);opacity:1}
-.price-cell{color:var(--gold)!important;opacity:1!important;font-weight:500;font-family:'Cormorant Garamond',serif;font-size:1rem}
-.view-toggle{display:flex;gap:3px;background:rgba(0,0,0,0.2);padding:3px}
-.view-btn{padding:8px 12px;border:none;background:transparent;color:var(--parchment);opacity:0.4;cursor:pointer;transition:all 0.3s;font-size:0.85rem}
-.view-btn.active{background:rgba(196,151,58,0.15);opacity:1;color:var(--gold)}
-
-/* BRANDS SECTION */
+/* BRANDS */
 .brand-sec{background:rgba(0,0,0,0.2);overflow:hidden}
-.brand-row{margin-top:50px;overflow:hidden;position:relative}
-.brand-row::before,.brand-row::after{content:'';position:absolute;top:0;bottom:0;width:150px;z-index:2}
+.brand-row{margin-top:44px;overflow:hidden;position:relative}
+.brand-row::before,.brand-row::after{content:'';position:absolute;top:0;bottom:0;width:120px;z-index:2}
 .brand-row::before{left:0;background:linear-gradient(to right,rgba(10,18,14,0.95),transparent)}
 .brand-row::after{right:0;background:linear-gradient(to left,rgba(10,18,14,0.95),transparent)}
-.brand-track{display:flex;gap:16px;animation:scroll 40s linear infinite;width:max-content}
-.bpill{background:rgba(255,255,255,0.022);border:1px solid rgba(196,151,58,0.08);padding:12px 24px;font-size:0.68rem;letter-spacing:0.14em;text-transform:uppercase;white-space:nowrap;opacity:0.46;transition:all 0.3s;cursor:pointer}
+.brand-track{display:flex;gap:14px;animation:scroll 40s linear infinite;width:max-content}
+.bpill{background:rgba(255,255,255,0.022);border:1px solid rgba(196,151,58,0.09);padding:11px 22px;font-size:0.66rem;letter-spacing:0.14em;text-transform:uppercase;white-space:nowrap;opacity:0.5;transition:all 0.3s;cursor:pointer}
 .bpill:hover{opacity:1;border-color:var(--gold);color:var(--gold)}
 
 /* TERMS */
-.terms-sec{background:rgba(0,0,0,0.15)}
-.terms-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;margin-top:54px}
-.term-card{background:rgba(255,255,255,0.022);border:1px solid rgba(196,151,58,0.06);padding:46px 32px;transition:all 0.3s;position:relative;overflow:hidden}
+.terms-sec{background:rgba(0,0,0,0.14)}
+.terms-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;margin-top:48px}
+.term-card{background:rgba(255,255,255,0.022);border:1px solid rgba(196,151,58,0.07);padding:40px 28px;transition:all 0.3s;position:relative;overflow:hidden;cursor:pointer}
 .term-card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(to right,transparent,var(--gold),transparent);opacity:0;transition:opacity 0.3s}
-.term-card:hover{background:rgba(31,107,69,0.08);border-color:rgba(196,151,58,0.18)}
+.term-card:hover{background:rgba(31,107,69,0.09);border-color:rgba(196,151,58,0.2)}
 .term-card:hover::before{opacity:1}
-.term-icon{font-size:1.6rem;margin-bottom:20px;display:block}
-.term-title{font-family:'Cormorant Garamond',serif;font-size:1.3rem;font-weight:600;margin-bottom:12px}
-.term-desc{font-size:0.78rem;opacity:0.4;line-height:1.86}
-.term-cta{display:inline-block;margin-top:18px;font-size:0.62rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--gold);opacity:0.6;border-bottom:1px solid rgba(196,151,58,0.28);padding-bottom:2px;cursor:pointer;transition:opacity 0.3s;text-decoration:none}
-.term-cta:hover{opacity:1}
+.term-icon{font-size:1.5rem;margin-bottom:18px;display:block}
+.term-title{font-family:'Cormorant Garamond',serif;font-size:1.25rem;font-weight:600;margin-bottom:11px;color:#fff}
+.term-desc{font-size:0.76rem;opacity:0.55;line-height:1.84;color:var(--parchment)}
+.term-cta{display:inline-block;margin-top:16px;font-size:0.6rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--gold);opacity:0.7;border-bottom:1px solid rgba(196,151,58,0.3);padding-bottom:2px;transition:opacity 0.3s}
+.term-card:hover .term-cta{opacity:1}
+
+/* TERMS MODAL */
+.terms-modal{position:fixed;inset:0;background:rgba(4,10,6,0.95);z-index:500;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 0.3s;padding:30px}
+.terms-modal.open{opacity:1;pointer-events:all}
+.terms-modal-inner{background:#0c1b11;border:1px solid rgba(196,151,58,0.2);max-width:600px;width:100%;max-height:85vh;overflow-y:auto;transform:translateY(20px);transition:transform 0.3s}
+.terms-modal.open .terms-modal-inner{transform:translateY(0)}
+.tm-head{padding:28px 28px 20px;border-bottom:1px solid rgba(196,151,58,0.08);display:flex;justify-content:space-between;align-items:center}
+.tm-title{font-family:'Cormorant Garamond',serif;font-size:1.6rem;font-weight:600}
+.tm-close{background:none;border:1px solid rgba(196,151,58,0.22);color:var(--gold);width:34px;height:34px;cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center;transition:all 0.3s}
+.tm-close:hover{background:var(--gold);color:var(--deep)}
+.tm-body{padding:28px}
+.tm-row{display:flex;gap:14px;padding:16px 0;border-bottom:1px solid rgba(196,151,58,0.07);align-items:flex-start}
+.tm-row:last-child{border-bottom:none}
+.tm-icon{font-size:1.2rem;flex-shrink:0;margin-top:2px}
+.tm-text h4{font-family:'Cormorant Garamond',serif;font-size:1.05rem;font-weight:600;margin-bottom:4px}
+.tm-text p{font-size:0.78rem;opacity:0.52;line-height:1.8}
 
 /* HOW */
 .how-sec{background:var(--forest)}
-.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;margin-top:56px}
-.step{background:rgba(0,0,0,0.15);border:1px solid rgba(196,151,58,0.06);padding:42px 28px;transition:all 0.3s;position:relative}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;margin-top:50px}
+.step{background:rgba(0,0,0,0.14);border:1px solid rgba(196,151,58,0.06);padding:38px 24px;transition:all 0.3s;position:relative}
 .step:hover{background:rgba(31,107,69,0.1);border-color:rgba(196,151,58,0.18)}
 .step-line{position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(to right,var(--gold),transparent);transform:scaleX(0);transform-origin:left;transition:transform 0.5s ease}
 .step:hover .step-line{transform:scaleX(1)}
-.snum{font-family:'Cormorant Garamond',serif;font-size:4rem;font-weight:700;color:var(--gold);opacity:0.09;line-height:1;margin-bottom:22px}
-.stit{font-family:'Cormorant Garamond',serif;font-size:1.25rem;font-weight:600;margin-bottom:10px}
-.sdesc{font-size:0.77rem;opacity:0.4;line-height:1.86}
+.snum{font-family:'Cormorant Garamond',serif;font-size:3.8rem;font-weight:700;color:var(--gold);opacity:0.1;line-height:1;margin-bottom:20px}
+.stit{font-family:'Cormorant Garamond',serif;font-size:1.2rem;font-weight:600;margin-bottom:9px;color:#fff}
+.sdesc{font-size:0.75rem;opacity:0.5;line-height:1.84}
 
 /* CTA */
-.cta-sec{position:relative;overflow:hidden;text-align:center;padding:120px 60px}
-.cta-img{position:absolute;inset:0;background:url('https://images.unsplash.com/photo-1560472354-b33ff0c44a43?w=1600&q=80') center/cover no-repeat;opacity:0.06}
+.cta-sec{position:relative;overflow:hidden;text-align:center;padding:110px 40px}
+.cta-bg{position:absolute;inset:0;background:linear-gradient(135deg,rgba(31,107,69,0.22) 0%,rgba(8,18,12,0.98) 100%);z-index:0}
 .cta-inner{position:relative;z-index:2}
 .cta-sec .s-label{justify-content:center}
 .cta-sec .s-label::after{display:none}
-.cta-sec h2{font-size:clamp(2.2rem,4.5vw,3.8rem);margin-bottom:16px}
-.cta-sec .s-sub{margin:0 auto 44px;max-width:520px;text-align:center}
-.cta-contacts{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;margin-top:54px}
-.cc{background:rgba(255,255,255,0.02);border:1px solid rgba(196,151,58,0.08);padding:28px;text-align:center;transition:all 0.3s}
+.cta-contacts{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;margin-top:48px}
+.cc{background:rgba(255,255,255,0.02);border:1px solid rgba(196,151,58,0.08);padding:24px;text-align:center;transition:all 0.3s}
 .cc:hover{background:rgba(196,151,58,0.05);border-color:rgba(196,151,58,0.2)}
-.cc-lbl{font-size:0.6rem;letter-spacing:0.22em;text-transform:uppercase;color:var(--gold);opacity:0.48;margin-bottom:8px;display:block}
-.cc-val{font-family:'Cormorant Garamond',serif;font-size:1.05rem;opacity:0.8}
+.cc-lbl{font-size:0.58rem;letter-spacing:0.2em;text-transform:uppercase;color:var(--gold);opacity:0.5;margin-bottom:7px;display:block}
+.cc-val{font-family:'Cormorant Garamond',serif;font-size:1rem;opacity:0.82}
 
 /* FOOTER */
-footer{background:rgba(0,0,0,0.45);padding:50px 60px;border-top:1px solid rgba(196,151,58,0.07)}
-.foot-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:40px;padding-bottom:40px;border-bottom:1px solid rgba(196,151,58,0.07)}
-.foot-brand{font-family:'Cormorant Garamond',serif;font-size:1.1rem;font-weight:600;color:var(--gold);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:8px}
-.foot-tagline{font-size:0.75rem;opacity:0.3;letter-spacing:0.05em}
-.foot-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:40px}
-.foot-col-title{font-size:0.63rem;letter-spacing:0.2em;text-transform:uppercase;color:var(--gold);opacity:0.5;margin-bottom:16px}
-.foot-links{list-style:none;display:flex;flex-direction:column;gap:8px}
-.foot-links a{font-size:0.75rem;opacity:0.28;color:var(--parchment);text-decoration:none;transition:opacity 0.3s;letter-spacing:0.04em}
+footer{background:rgba(0,0,0,0.44);padding:44px 40px;border-top:1px solid rgba(196,151,58,0.07)}
+.foot-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:36px;padding-bottom:36px;border-bottom:1px solid rgba(196,151,58,0.07);flex-wrap:wrap;gap:30px}
+.foot-brand{font-family:'Cormorant Garamond',serif;font-size:1rem;font-weight:600;color:var(--gold);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:6px}
+.foot-tagline{font-size:0.72rem;opacity:0.32}
+.foot-ig{display:flex;align-items:center;gap:6px;margin-top:10px;color:var(--parchment);text-decoration:none;font-size:0.7rem;opacity:0.4;transition:opacity 0.3s}
+.foot-ig:hover{opacity:0.8;color:var(--gold)}
+.foot-ig svg{width:13px;height:13px;fill:currentColor}
+.foot-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:32px}
+.foot-col-title{font-size:0.6rem;letter-spacing:0.2em;text-transform:uppercase;color:var(--gold);opacity:0.5;margin-bottom:14px}
+.foot-links{list-style:none;display:flex;flex-direction:column;gap:7px}
+.foot-links a{font-size:0.72rem;opacity:0.32;color:var(--parchment);text-decoration:none;transition:opacity 0.3s}
 .foot-links a:hover{opacity:0.75}
-.foot-bottom{display:flex;justify-content:space-between;align-items:center}
-.fcopy{font-size:0.68rem;opacity:0.2}
+.foot-bottom{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+.fcopy{font-size:0.66rem;opacity:0.22}
 
 /* CART DRAWER */
-.cart-drawer{position:fixed;top:0;right:0;bottom:0;width:420px;background:#0d1e13;border-left:1px solid rgba(196,151,58,0.15);z-index:300;transform:translateX(100%);transition:transform 0.4s ease;display:flex;flex-direction:column}
+.cart-drawer{position:fixed;top:0;right:0;bottom:0;width:400px;background:#0d1e13;border-left:1px solid rgba(196,151,58,0.14);z-index:300;transform:translateX(100%);transition:transform 0.4s ease;display:flex;flex-direction:column}
 .cart-drawer.open{transform:translateX(0)}
-.cart-header{padding:28px 28px 20px;border-bottom:1px solid rgba(196,151,58,0.1);display:flex;justify-content:space-between;align-items:center}
-.cart-title{font-family:'Cormorant Garamond',serif;font-size:1.5rem;font-weight:600}
-.cart-close{background:none;border:1px solid rgba(196,151,58,0.2);color:var(--gold);width:36px;height:36px;cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center;transition:all 0.3s}
+.cart-header{padding:24px 24px 18px;border-bottom:1px solid rgba(196,151,58,0.09);display:flex;justify-content:space-between;align-items:center}
+.cart-title{font-family:'Cormorant Garamond',serif;font-size:1.4rem;font-weight:600}
+.cart-close{background:none;border:1px solid rgba(196,151,58,0.2);color:var(--gold);width:34px;height:34px;cursor:pointer;font-size:0.95rem;display:flex;align-items:center;justify-content:center;transition:all 0.3s}
 .cart-close:hover{background:var(--gold);color:var(--deep)}
-.cart-items{flex:1;overflow-y:auto;padding:20px 28px}
-.cart-empty{text-align:center;padding:60px 20px;opacity:0.35;font-size:0.85rem}
-.cart-item{display:flex;justify-content:space-between;align-items:flex-start;padding:16px 0;border-bottom:1px solid rgba(255,255,255,0.04);gap:12px}
+.cart-items{flex:1;overflow-y:auto;padding:18px 24px}
+.cart-empty{text-align:center;padding:50px 20px;opacity:0.35;font-size:0.82rem}
+.cart-item{display:flex;justify-content:space-between;align-items:flex-start;padding:14px 0;border-bottom:1px solid rgba(255,255,255,0.04);gap:10px}
 .ci-info{flex:1}
-.ci-name{font-size:0.85rem;margin-bottom:4px;opacity:0.85;line-height:1.3}
-.ci-price{font-family:'Cormorant Garamond',serif;font-size:1rem;color:var(--gold)}
-.ci-remove{background:none;border:none;color:var(--parchment);opacity:0.25;cursor:pointer;font-size:1rem;padding:0;transition:opacity 0.2s;flex-shrink:0}
+.ci-name{font-size:0.82rem;margin-bottom:3px;opacity:0.85;line-height:1.3}
+.ci-price{font-family:'Cormorant Garamond',serif;font-size:0.95rem;color:var(--gold)}
+.ci-remove{background:none;border:none;color:var(--parchment);opacity:0.25;cursor:pointer;font-size:0.95rem;padding:0;transition:opacity 0.2s;flex-shrink:0}
 .ci-remove:hover{opacity:0.7}
-.cart-footer{padding:20px 28px 28px;border-top:1px solid rgba(196,151,58,0.1)}
-.cart-total{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
-.ct-lbl{font-size:0.7rem;letter-spacing:0.14em;text-transform:uppercase;opacity:0.4}
-.ct-val{font-family:'Cormorant Garamond',serif;font-size:1.5rem;color:var(--gold)}
-.cart-note{font-size:0.72rem;opacity:0.35;line-height:1.7;margin-bottom:16px}
-
-/* REQUEST FORM */
-.req-form{display:flex;flex-direction:column;gap:10px}
-.req-input{background:rgba(255,255,255,0.04);border:1px solid rgba(196,151,58,0.12);padding:11px 14px;font-family:'Jost',sans-serif;font-size:0.8rem;color:var(--parchment);outline:none;transition:border-color 0.3s;width:100%}
+.cart-footer{padding:18px 24px 24px;border-top:1px solid rgba(196,151,58,0.09)}
+.cart-total{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.ct-lbl{font-size:0.66rem;letter-spacing:0.14em;text-transform:uppercase;opacity:0.42}
+.ct-val{font-family:'Cormorant Garamond',serif;font-size:1.4rem;color:var(--gold)}
+.cart-note{font-size:0.7rem;opacity:0.36;line-height:1.7;margin-bottom:14px}
+.req-form{display:flex;flex-direction:column;gap:9px}
+.req-input{background:rgba(255,255,255,0.04);border:1px solid rgba(196,151,58,0.12);padding:10px 13px;font-family:'Jost',sans-serif;font-size:0.78rem;color:var(--parchment);outline:none;transition:border-color 0.3s;width:100%}
 .req-input::placeholder{opacity:0.3}
-.req-input:focus{border-color:rgba(196,151,58,0.35)}
-.req-submit{background:var(--gold);color:var(--deep);border:none;padding:13px;font-family:'Jost',sans-serif;font-size:0.76rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;width:100%}
+.req-input:focus{border-color:rgba(196,151,58,0.38)}
+.req-submit{background:var(--gold);color:var(--deep);border:none;padding:12px;font-family:'Jost',sans-serif;font-size:0.74rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;width:100%}
 .req-submit:hover{background:var(--gold-l)}
-.req-wa{background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.25);color:#25d166;padding:11px;font-family:'Jost',sans-serif;font-size:0.72rem;letter-spacing:0.12em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;width:100%;display:flex;align-items:center;justify-content:center;gap:8px;text-decoration:none}
+.req-wa{background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.25);color:#25d166;padding:10px;font-family:'Jost',sans-serif;font-size:0.7rem;letter-spacing:0.12em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;width:100%;display:flex;align-items:center;justify-content:center;gap:7px;text-decoration:none}
 .req-wa:hover{background:rgba(37,211,102,0.18)}
-.req-wa svg{width:14px;height:14px;fill:currentColor}
-
-/* PRODUCT MODAL */
-.overlay{position:fixed;inset:0;background:rgba(4,10,6,0.96);z-index:400;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 0.3s;padding:36px}
-.overlay.open{opacity:1;pointer-events:all}
-.modal{background:#0c1b11;border:1px solid rgba(196,151,58,0.18);max-width:700px;width:100%;max-height:88vh;overflow-y:auto;transform:translateY(24px);transition:transform 0.3s}
-.overlay.open .modal{transform:translateY(0)}
-.mhead{padding:32px 32px 24px;border-bottom:1px solid rgba(196,151,58,0.08);display:flex;justify-content:space-between;align-items:flex-start}
-.mttl{font-family:'Cormorant Garamond',serif;font-size:1.75rem;font-weight:600;line-height:1.2}
-.mx{background:none;border:1px solid rgba(196,151,58,0.22);color:var(--gold);width:36px;height:36px;cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center;transition:all 0.3s;flex-shrink:0;margin-left:16px}
-.mx:hover{background:var(--gold);color:var(--deep)}
-.mbody{padding:32px}
-.attrs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:24px}
-.attr{background:rgba(255,255,255,0.022);padding:11px 14px}
-.albl{font-size:0.58rem;letter-spacing:0.16em;text-transform:uppercase;color:var(--gold);opacity:0.5;margin-bottom:3px}
-.aval{font-size:0.84rem;opacity:0.78}
-.ptbl{width:100%;border-collapse:collapse;margin-top:8px}
-.ptbl th{text-align:left;font-size:0.58rem;letter-spacing:0.16em;text-transform:uppercase;color:var(--gold);opacity:0.48;padding:8px 12px;border-bottom:1px solid rgba(196,151,58,0.1)}
-.ptbl td{padding:10px 12px;font-size:0.8rem;border-bottom:1px solid rgba(255,255,255,0.04);opacity:0.68}
-.ptbl tr:hover td{background:rgba(196,151,58,0.04);opacity:1}
-.pv{color:var(--gold)!important;opacity:1!important;font-weight:500}
-.mdesc{font-size:0.8rem;line-height:1.86;opacity:0.42;margin-top:22px}
-.modal-add-cart{width:100%;background:var(--gold);color:var(--deep);border:none;padding:14px;font-family:'Jost',sans-serif;font-size:0.78rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;margin-top:24px}
-.modal-add-cart:hover{background:var(--gold-l)}
-
-/* SUCCESS */
-.success-msg{background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.25);color:#25d166;padding:14px;font-size:0.78rem;text-align:center;display:none;margin-top:10px}
+.req-wa svg{width:13px;height:13px;fill:currentColor}
+.success-msg{background:rgba(37,211,102,0.1);border:1px solid rgba(37,211,102,0.25);color:#25d166;padding:12px;font-size:0.75rem;text-align:center;display:none;margin-top:8px}
 .success-msg.show{display:block}
 
+/* PRODUCT MODAL */
+.overlay{position:fixed;inset:0;background:rgba(4,10,6,0.96);z-index:400;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 0.3s;padding:30px}
+.overlay.open{opacity:1;pointer-events:all}
+.modal{background:#0c1b11;border:1px solid rgba(196,151,58,0.18);max-width:660px;width:100%;max-height:88vh;overflow-y:auto;transform:translateY(22px);transition:transform 0.3s}
+.overlay.open .modal{transform:translateY(0)}
+.mhead{padding:28px 28px 22px;border-bottom:1px solid rgba(196,151,58,0.08);display:flex;justify-content:space-between;align-items:flex-start}
+.mttl{font-family:'Cormorant Garamond',serif;font-size:1.65rem;font-weight:600;line-height:1.2}
+.mx{background:none;border:1px solid rgba(196,151,58,0.22);color:var(--gold);width:34px;height:34px;cursor:pointer;font-size:0.95rem;display:flex;align-items:center;justify-content:center;transition:all 0.3s;flex-shrink:0;margin-left:14px}
+.mx:hover{background:var(--gold);color:var(--deep)}
+.mbody{padding:28px}
+.attrs{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:22px}
+.attr{background:rgba(255,255,255,0.022);padding:10px 13px}
+.albl{font-size:0.56rem;letter-spacing:0.16em;text-transform:uppercase;color:var(--gold);opacity:0.52;margin-bottom:3px}
+.aval{font-size:0.82rem;opacity:0.78}
+.ptbl{width:100%;border-collapse:collapse;margin-top:8px}
+.ptbl th{text-align:left;font-size:0.56rem;letter-spacing:0.16em;text-transform:uppercase;color:var(--gold);opacity:0.5;padding:7px 11px;border-bottom:1px solid rgba(196,151,58,0.1)}
+.ptbl td{padding:9px 11px;font-size:0.78rem;border-bottom:1px solid rgba(255,255,255,0.04);opacity:0.7}
+.ptbl tr:hover td{background:rgba(196,151,58,0.04);opacity:1}
+.pv{color:var(--gold)!important;opacity:1!important;font-weight:500}
+.mdesc{font-size:0.78rem;line-height:1.86;opacity:0.44;margin-top:20px}
+.modal-add-cart{width:100%;background:var(--gold);color:var(--deep);border:none;padding:13px;font-family:'Jost',sans-serif;font-size:0.76rem;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;transition:all 0.3s;margin-top:22px}
+.modal-add-cart:hover{background:var(--gold-l)}
+
+/* LANG TOGGLE */
+[data-ru],[data-en]{transition:opacity 0.2s}
+html[data-lang="en"] [data-ru]{display:none}
+html[data-lang="ru"] [data-en]{display:none}
+
 /* ANIMATIONS */
-@keyframes fadeUp{from{opacity:0;transform:translateY(28px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(26px)}to{opacity:1;transform:translateY(0)}}
 @keyframes scroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+
+/* MOBILE RESPONSIVE */
+@media(max-width:1024px){
+  nav{padding:14px 20px}
+  .nav-links{gap:16px}
+  .nav-links a{font-size:0.66rem}
+  section{padding:70px 24px}
+  .logistics-strip{padding:60px 24px}
+  .logistics-inner{grid-template-columns:1fr;gap:36px}
+  .cat-grid{grid-template-columns:1fr 1fr}
+  .cat-card.wide{grid-column:span 2}
+  .steps{grid-template-columns:repeat(2,1fr)}
+  .terms-grid{grid-template-columns:1fr 1fr}
+  .cta-contacts{grid-template-columns:1fr 1fr}
+  .foot-top{flex-direction:column}
+  .foot-cols{grid-template-columns:1fr 1fr}
+}
+@media(max-width:768px){
+  .lang-bar{padding:6px 16px}
+  nav{padding:12px 16px;top:28px}
+  .nav-links{display:none}
+  .nav-links.open{display:flex;flex-direction:column;position:fixed;top:90px;left:0;right:0;background:rgba(10,20,14,0.98);padding:20px;gap:0;border-bottom:1px solid rgba(196,151,58,0.1);z-index:99}
+  .nav-links.open a{padding:14px 0;border-bottom:1px solid rgba(196,151,58,0.06);font-size:0.85rem;opacity:1}
+  .nav-toggle{display:flex}
+  .nav-right .nav-wa,.nav-right .nav-cta{display:none}
+  .hero{padding:130px 20px 80px}
+  .hero-stats{gap:0}
+  .stat-item{padding:18px 20px}
+  .stat-num{font-size:1.8rem}
+  .cat-grid{grid-template-columns:1fr}
+  .cat-card.wide{grid-column:span 1;aspect-ratio:4/3}
+  .steps{grid-template-columns:1fr}
+  .terms-grid{grid-template-columns:1fr}
+  .cta-contacts{grid-template-columns:1fr}
+  .cart-drawer{width:100%}
+  .logistics-img-grid{grid-template-columns:1fr}
+  .logistics-img.tall{grid-row:span 1;aspect-ratio:4/3}
+  .foot-cols{grid-template-columns:1fr}
+  .attrs{grid-template-columns:1fr}
+  .btns{flex-direction:column;align-items:center}
+  .btn-gold,.btn-outline,.btn-wa-hero{width:100%;text-align:center;justify-content:center}
+}
 
 ::-webkit-scrollbar{width:3px}
 ::-webkit-scrollbar-track{background:var(--forest)}
 ::-webkit-scrollbar-thumb{background:rgba(196,151,58,0.3)}
-
-/* LANG */
-[data-ru],[data-en]{transition:opacity 0.2s}
-html[data-lang="en"] [data-ru]{display:none}
-html[data-lang="ru"] [data-en]{display:none}
 </style>
 </head>
-<body>
-
-<canvas id="canvas"></canvas>
+<body id="artifacts-component-root-html">
+<canvas id="canvas" width="1262" height="662"></canvas>
 
 <!-- LANG BAR -->
 <div class="lang-bar">
+  <a href="https://www.instagram.com/silkroad.vitamins" target="_blank" class="ig-link">
+    <svg viewBox="0 0 24 24"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"></path></svg>
+    @silkroad.vitamins
+  </a>
   <button class="lang-btn active" onclick="setLang('ru')">RU</button>
   <span class="lang-sep">|</span>
   <button class="lang-btn" onclick="setLang('en')">EN</button>
@@ -310,77 +644,63 @@ html[data-lang="ru"] [data-en]{display:none}
 <nav>
   <a href="#" class="nav-logo">
     <svg viewBox="0 0 100 100" fill="none">
-      <circle cx="50" cy="50" r="46" stroke="#C4973A" stroke-width="1.5"/>
-      <circle cx="50" cy="50" r="38" stroke="#C4973A" stroke-width="0.75" stroke-dasharray="4 4"/>
-      <polygon points="50,8 54,44 50,50 46,44" fill="#C4973A"/>
-      <polygon points="50,92 46,56 50,50 54,56" fill="#C4973A" opacity="0.4"/>
-      <polygon points="8,50 44,46 50,50 44,54" fill="#C4973A" opacity="0.4"/>
-      <polygon points="92,50 56,54 50,50 56,46" fill="#C4973A"/>
-      <circle cx="50" cy="50" r="5" fill="#C4973A"/>
-      <circle cx="50" cy="50" r="2.5" fill="#0f1f16"/>
+      <circle cx="50" cy="50" r="46" stroke="#C4973A" stroke-width="1.5"></circle>
+      <circle cx="50" cy="50" r="38" stroke="#C4973A" stroke-width="0.75" stroke-dasharray="4 4"></circle>
+      <polygon points="50,8 54,44 50,50 46,44" fill="#C4973A"></polygon>
+      <polygon points="50,92 46,56 50,50 54,56" fill="#C4973A" opacity="0.4"></polygon>
+      <polygon points="8,50 44,46 50,50 44,54" fill="#C4973A" opacity="0.4"></polygon>
+      <polygon points="92,50 56,54 50,50 56,46" fill="#C4973A"></polygon>
+      <circle cx="50" cy="50" r="5" fill="#C4973A"></circle>
+      <circle cx="50" cy="50" r="2.5" fill="#0f1f16"></circle>
     </svg>
     <span class="nav-brand">KG Silkroad</span>
   </a>
-  <ul class="nav-links">
-    <li><a href="#catalog"><span data-ru>Каталог</span><span data-en>Catalog</span></a></li>
-    <li><a href="#vitamins"><span data-ru>Витамины</span><span data-en>Vitamins</span></a></li>
-    <li><a href="#sports"><span data-ru>Спортпит</span><span data-en>Sports</span></a></li>
-    <li><a href="#peptides"><span data-ru>Пептиды</span><span data-en>Peptides</span></a></li>
-    <li><a href="#terms"><span data-ru>Условия</span><span data-en>Terms</span></a></li>
+  <ul class="nav-links" id="nav-links">
+    <li><a href="#catalog"><span data-ru="">Каталог</span><span data-en="">Catalog</span></a></li>
+    <li><a href="#vitamins"><span data-ru="">Витамины</span><span data-en="">Vitamins</span></a></li>
+    <li><a href="#sports"><span data-ru="">Спортпит</span><span data-en="">Sports</span></a></li>
+    <li><a href="#peptides"><span data-ru="">Пептиды</span><span data-en="">Peptides</span></a></li>
+    <li><a href="#terms"><span data-ru="">Условия</span><span data-en="">Terms</span></a></li>
   </ul>
   <div class="nav-right">
     <a href="https://wa.me/12677730711" target="_blank" class="nav-wa">
-      <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+      <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"></path></svg>
       WhatsApp
     </a>
     <button class="cart-btn" onclick="toggleCart()">
-      🛒
-      <span class="cart-count" id="cart-count">0</span>
+      🛒<span class="cart-count" id="cart-count">0</span>
     </button>
-    <a href="#contact" class="nav-cta">
-      <span data-ru>Запросить предложение</span>
-      <span data-en>Get a Quote</span>
-    </a>
+    <a href="#contact" class="nav-cta"><span data-ru="">Предложение</span><span data-en="">Get Quote</span></a>
+    <button class="nav-toggle" onclick="toggleNav()" id="nav-toggle">☰</button>
   </div>
 </nav>
 
 <!-- HERO -->
 <section class="hero">
-  <div class="hero-img"></div>
-  <div class="hero-inner">
-    <div class="eyebrow">
-      <i></i>
-      <span data-ru>Прямые поставки из США и Европы</span>
-      <span data-en>Direct supply from USA & Europe</span>
-      <i></i>
-    </div>
+  <div class="hero-img" style="opacity: 1; visibility: visible;"></div>
+  <div class="hero-inner" style="opacity: 1; transform: translateY(0px) translateZ(0px);">
+    <div class="eyebrow"><i></i><span data-ru="">Прямые поставки из США и Европы</span><span data-en="">Direct supply from USA &amp; Europe</span><i></i></div>
     <h1 class="hero-title">
-      <span data-ru>Витамины, спортпит<br>и <em>пептиды</em> для бизнеса</span>
-      <span data-en>Vitamins, sports nutrition<br>and <em>peptides</em> for business</span>
+      <span data-ru="">Витамины, спортпит<br>и <em>пептиды</em> для бизнеса</span>
+      <span data-en="">Vitamins, sports nutrition<br>and <em>peptides</em> for business</span>
     </h1>
     <p class="hero-sub">
-      <span data-ru>Продукция американского и европейского производства. Проверенные бренды, актуальные прайсы, оптовые условия.</span>
-      <span data-en>American and European products. Verified brands, current pricing, wholesale terms.</span>
+      <span data-ru="">Продукция американского и европейского производства. Проверенные бренды, актуальные прайсы, оптовые условия.</span>
+      <span data-en="">American and European products. Verified brands, current pricing, wholesale terms.</span>
     </p>
     <div class="btns">
-      <a href="#catalog" class="btn-gold">
-        <span data-ru>Открыть каталог</span>
-        <span data-en>Browse Catalog</span>
-      </a>
-      <a href="https://wa.me/12677730711" target="_blank" class="btn-wa">
-        <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+      <a href="#catalog" class="btn-gold"><span data-ru="">Открыть каталог</span><span data-en="">Browse Catalog</span></a>
+      <a href="https://wa.me/12677730711" target="_blank" class="btn-wa-hero">
+        <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"></path></svg>
         WhatsApp
       </a>
-      <a href="#contact" class="btn-outline">
-        <span data-ru>Написать нам</span>
-        <span data-en>Contact Us</span>
-      </a>
+      <a href="#contact" class="btn-outline"><span data-ru="">Написать нам</span><span data-en="">Contact Us</span></a>
     </div>
     <div class="hero-stats">
-      <div class="stat-item"><span class="stat-num">170+</span><span class="stat-lbl"><span data-ru>Брендов</span><span data-en>Brands</span></span></div>
-      <div class="stat-item"><span class="stat-num">19 000+</span><span class="stat-lbl"><span data-ru>Позиций</span><span data-en>SKUs</span></span></div>
-      <div class="stat-item"><span class="stat-num">96</span><span class="stat-lbl"><span data-ru>Пептидов</span><span data-en>Peptides</span></span></div>
-      <div class="stat-item"><span class="stat-num">США · ЕС</span><span class="stat-lbl"><span data-ru>Производство</span><span data-en>Origin</span></span></div>
+      <div class="stat-item"><span class="stat-num">170+</span><span class="stat-lbl"><span data-ru="">Брендов</span><span data-en="">Brands</span></span></div>
+      <div class="stat-item"><span class="stat-num">19 000+</span><span class="stat-lbl"><span data-ru="">Позиций</span><span data-en="">SKUs</span></span></div>
+      <div class="stat-item"><span class="stat-num">96</span><span class="stat-lbl"><span data-ru="">Пептидов</span><span data-en="">Peptides</span></span></div>
+      <div class="stat-item"><span class="stat-num">США · ЕС</span><span class="stat-lbl"><span data-ru="">Производство</span><span data-en="">Origin</span></span></div>
     </div>
   </div>
 </section>
@@ -389,45 +709,42 @@ html[data-lang="ru"] [data-en]{display:none}
 <section class="cat-sec reveal" id="catalog">
   <div class="cat-head">
     <div>
-      <div class="s-label"><span data-ru>Направления</span><span data-en>Categories</span></div>
-      <h2><span data-ru>Наш ассортимент</span><span data-en>Our Range</span></h2>
+      <div class="s-label"><span data-ru="">Направления</span><span data-en="">Categories</span></div>
+      <h2><span data-ru="">Наш ассортимент</span><span data-en="">Our Range</span></h2>
     </div>
-    <p class="s-sub">
-      <span data-ru>Три категории — один надёжный партнёр. Прямые поставки, оптовые условия.</span>
-      <span data-en>Three categories — one reliable partner. Direct supply, wholesale terms.</span>
-    </p>
+    <p class="s-sub"><span data-ru="">Три категории — один надёжный партнёр. Прямые поставки, оптовые условия.</span><span data-en="">Three categories — one reliable partner. Direct supply, wholesale terms.</span></p>
   </div>
   <div class="cat-grid">
-    <a href="#vitamins" class="cat-card wide">
-      <div class="cat-bg-img" style="background-image:url('https://images.unsplash.com/photo-1550572017-edd951b55104?w=800&q=80')"></div>
-      <div class="cat-overlay" style="background:linear-gradient(145deg,rgba(196,151,58,0.2) 0%,rgba(8,18,12,0.92) 100%)"></div>
+    <a href="#vitamins" class="cat-card wide" id="vitamins">
+      <div class="cat-bg-img" style="background-image:url('https://images.unsplash.com/photo-1607619056574-7b8d3ee536b2?w=1200&amp;q=80')"></div>
+      <div class="cat-overlay" style="background:linear-gradient(145deg,rgba(196,151,58,0.15) 0%,rgba(8,18,12,0.88) 100%)"></div>
       <div class="cat-dots"></div>
       <div class="cat-cnt">
         <div class="cat-icon">💊</div>
-        <div class="cat-name"><span data-ru>Витамины и нутрицевтики</span><span data-en>Vitamins & Nutraceuticals</span></div>
+        <div class="cat-name"><span data-ru="">Витамины и нутрицевтики</span><span data-en="">Vitamins &amp; Nutraceuticals</span></div>
         <div class="cat-meta">KAL · Solaray · NOW Foods · Solgar · Thorne</div>
       </div>
       <div class="cat-arr">→</div>
     </a>
-    <a href="#sports" class="cat-card">
-      <div class="cat-bg-img" style="background-image:url('https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=800&q=80')"></div>
-      <div class="cat-overlay" style="background:linear-gradient(145deg,rgba(31,107,69,0.55) 0%,rgba(8,18,12,0.94) 100%)"></div>
+    <a href="#sports" class="cat-card" id="sports">
+      <div class="cat-bg-img" style="background-image:url('https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=800&amp;q=80')"></div>
+      <div class="cat-overlay" style="background:linear-gradient(145deg,rgba(31,107,69,0.5) 0%,rgba(8,18,12,0.92) 100%)"></div>
       <div class="cat-dots"></div>
       <div class="cat-cnt">
         <div class="cat-icon">💪</div>
-        <div class="cat-name"><span data-ru>Спортивное питание</span><span data-en>Sports Nutrition</span></div>
+        <div class="cat-name"><span data-ru="">Спортивное питание</span><span data-en="">Sports Nutrition</span></div>
         <div class="cat-meta">Redcon1 · JNX · 1UP · Rule 1</div>
       </div>
       <div class="cat-arr">→</div>
     </a>
-    <a href="#peptides" class="cat-card">
-      <div class="cat-bg-img" style="background-image:url('https://images.unsplash.com/photo-1532187863486-abf9dbad1b69?w=800&q=80')"></div>
-      <div class="cat-overlay" style="background:linear-gradient(145deg,rgba(31,107,69,0.3) 0%,rgba(8,18,12,0.94) 100%)"></div>
+    <a href="#peptides" class="cat-card" id="peptides">
+      <div class="cat-bg-img" style="background-image:url('https://images.unsplash.com/photo-1532187863486-abf9dbad1b69?w=800&amp;q=80')"></div>
+      <div class="cat-overlay" style="background:linear-gradient(145deg,rgba(31,107,69,0.28) 0%,rgba(8,18,12,0.92) 100%)"></div>
       <div class="cat-dots"></div>
       <div class="cat-cnt">
         <div class="cat-icon">🧬</div>
-        <div class="cat-name"><span data-ru>Пептиды</span><span data-en>Peptides</span></div>
-        <div class="cat-meta"><span data-ru>96 позиций · США · Чистота ≥98%</span><span data-en>96 items · USA · Purity ≥98%</span></div>
+        <div class="cat-name"><span data-ru="">Пептиды</span><span data-en="">Peptides</span></div>
+        <div class="cat-meta"><span data-ru="">96 позиций · США · Чистота ≥98%</span><span data-en="">96 items · USA · Purity ≥98%</span></div>
       </div>
       <div class="cat-arr">→</div>
     </a>
@@ -436,154 +753,111 @@ html[data-lang="ru"] [data-en]{display:none}
 
 <!-- LOGISTICS -->
 <div class="logistics-strip reveal">
-  <div class="strip-bg"></div>
   <div class="logistics-inner">
     <div>
-      <div class="s-label"><span data-ru>Логистика</span><span data-en>Logistics</span></div>
-      <h2><span data-ru>Из США —<br>к вашему бизнесу</span><span data-en>From USA —<br>to your business</span></h2>
+      <div class="s-label"><span data-ru="">Логистика</span><span data-en="">Logistics</span></div>
+      <h2><span data-ru="">Из США —<br>к вашему бизнесу</span><span data-en="">From USA —<br>to your business</span></h2>
       <p class="s-sub" style="margin-top:14px">
-        <span data-ru>Отгрузка со склада в США. Авиа и морская доставка. Все необходимые документы. Стоимость логистики рассчитывается индивидуально после запроса.</span>
-        <span data-en>Shipment from US warehouse. Air and sea freight. All required documentation. Logistics cost calculated individually upon request.</span>
+        <span data-ru="">Отгрузка со склада в США. Авиа и морская доставка. Все необходимые документы. Стоимость логистики рассчитывается индивидуально после запроса.</span>
+        <span data-en="">Shipment from US warehouse. Air and sea freight. All required documentation. Logistics cost calculated individually upon request.</span>
       </p>
+      <div style="margin-top:28px">
+        <a href="https://wa.me/12677730711" target="_blank" class="btn-gold" style="display:inline-block">
+          <span data-ru="">Обсудить условия</span><span data-en="">Discuss Terms</span>
+        </a>
+      </div>
     </div>
     <div class="logistics-img-grid">
-      <div class="logistics-img tall" style="background-image:url('https://images.unsplash.com/photo-1568702846914-96b305d2aaeb?w=600&q=80');background-size:cover;background-position:center;border:1px solid rgba(196,151,58,0.08)"></div>
-      <div class="logistics-img" style="background-image:url('https://images.unsplash.com/photo-1436491865332-7a61a109cc05?w=600&q=80');background-size:cover;background-position:center;border:1px solid rgba(196,151,58,0.08)"></div>
-      <div class="logistics-img" style="background-image:url('https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=600&q=80');background-size:cover;background-position:center;border:1px solid rgba(196,151,58,0.08)"></div>
+      <div class="logistics-img tall" style="background-image:url('https://images.unsplash.com/photo-1521791136064-7986c2920216?w=600&amp;q=80');background-size:cover;background-position:center;border:1px solid rgba(196,151,58,0.08)"></div>
+      <div class="logistics-img" style="background-image:url('https://images.unsplash.com/photo-1436491865332-7a61a109cc05?w=600&amp;q=80');background-size:cover;background-position:center;border:1px solid rgba(196,151,58,0.08)"></div>
+      <div class="logistics-img" style="background-image:url('https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=600&amp;q=80');background-size:cover;background-position:center;border:1px solid rgba(196,151,58,0.08)"></div>
     </div>
   </div>
 </div>
 
-<!-- PEPTIDES CATALOG -->
-<section class="prod-sec reveal" id="peptides">
-  <div class="prod-head">
-    <div>
-      <div class="s-label"><span data-ru>Пептиды · США</span><span data-en>Peptides · USA</span></div>
-      <h2><span data-ru>Каталог пептидов</span><span data-en>Peptide Catalog</span></h2>
-    </div>
-    <div style="display:flex;gap:12px;align-items:center">
-      <div class="search-bar">
-        <input class="search-inp" id="pep-search" placeholder="Поиск..." oninput="searchPeptides(this.value)">
-        <button class="search-btn">⌕</button>
-      </div>
-      <div class="view-toggle">
-        <button class="view-btn active" onclick="setView('grid','pep')" title="Карточки">⊞</button>
-        <button class="view-btn" onclick="setView('table','pep')" title="Таблица">☰</button>
-      </div>
-    </div>
-  </div>
-  <div class="tabs">
-    <button class="tab active" onclick="filterP('all',this)"><span data-ru>Все</span><span data-en>All</span></button>
-    <button class="tab" onclick="filterP('powder',this)"><span data-ru>Порошок</span><span data-en>Powder</span></button>
-    <button class="tab" onclick="filterP('capsule',this)"><span data-ru>Капсулы</span><span data-en>Capsules</span></button>
-  </div>
-  <div id="pep-grid" class="pgrid"></div>
-  <div id="pep-table" class="ptable-wrap" style="display:none">
-    <table class="ptable" id="pep-tbl">
-      <thead><tr>
-        <th><span data-ru>Название</span><span data-en>Name</span></th>
-        <th><span data-ru>Форма</span><span data-en>Form</span></th>
-        <th>CAS</th>
-        <th><span data-ru>Цена</span><span data-en>Price</span></th>
-        <th></th>
-      </tr></thead>
-      <tbody id="pep-tbody"></tbody>
-    </table>
-  </div>
-</section>
-
 <!-- BRANDS -->
 <section class="brand-sec reveal" id="brands">
-  <div class="s-label"><span data-ru>Партнёры</span><span data-en>Partners</span></div>
-  <h2><span data-ru>170+ брендов из США и Европы</span><span data-en>170+ brands from USA & Europe</span></h2>
-  <div class="brand-row"><div class="brand-track" id="btrack"></div></div>
+  <div class="s-label"><span data-ru="">Партнёры</span><span data-en="">Partners</span></div>
+  <h2><span data-ru="">170+ брендов из США и Европы</span><span data-en="">170+ brands from USA &amp; Europe</span></h2>
+  <div class="brand-row"><div class="brand-track" id="btrack"><div class="bpill">KAL Vitamins</div><div class="bpill">Solaray</div><div class="bpill">NOW Foods</div><div class="bpill">Solgar</div><div class="bpill">JNX Sports</div><div class="bpill">1UP Nutrition</div><div class="bpill">Redcon1</div><div class="bpill">Rule 1</div><div class="bpill">Jarrow Formulas</div><div class="bpill">Thorne</div><div class="bpill">Nature's Answer</div><div class="bpill">Carlson Labs</div><div class="bpill">Bluebonnet</div><div class="bpill">Source Naturals</div><div class="bpill">PEScience</div><div class="bpill">MuscleTech</div><div class="bpill">Rainbow Light</div><div class="bpill">Zhou Nutrition</div><div class="bpill">Vital Proteins</div><div class="bpill">Superior Source</div><div class="bpill">NutriBiotic</div><div class="bpill">Enzymedica</div><div class="bpill">Country Life</div><div class="bpill">Nordic Naturals</div><div class="bpill">Garden of Life</div><div class="bpill">Nutrex</div><div class="bpill">BSN</div><div class="bpill">MusclePharm</div><div class="bpill">Optimum Nutrition</div><div class="bpill">American Health</div><div class="bpill">Bragg</div><div class="bpill">Double Wood</div><div class="bpill">Nutricost</div><div class="bpill">KAL Vitamins</div><div class="bpill">Solaray</div><div class="bpill">NOW Foods</div><div class="bpill">Solgar</div><div class="bpill">JNX Sports</div><div class="bpill">1UP Nutrition</div><div class="bpill">Redcon1</div><div class="bpill">Rule 1</div><div class="bpill">Jarrow Formulas</div><div class="bpill">Thorne</div><div class="bpill">Nature's Answer</div><div class="bpill">Carlson Labs</div><div class="bpill">Bluebonnet</div><div class="bpill">Source Naturals</div><div class="bpill">PEScience</div><div class="bpill">MuscleTech</div><div class="bpill">Rainbow Light</div><div class="bpill">Zhou Nutrition</div><div class="bpill">Vital Proteins</div><div class="bpill">Superior Source</div><div class="bpill">NutriBiotic</div><div class="bpill">Enzymedica</div><div class="bpill">Country Life</div><div class="bpill">Nordic Naturals</div><div class="bpill">Garden of Life</div><div class="bpill">Nutrex</div><div class="bpill">BSN</div><div class="bpill">MusclePharm</div><div class="bpill">Optimum Nutrition</div><div class="bpill">American Health</div><div class="bpill">Bragg</div><div class="bpill">Double Wood</div><div class="bpill">Nutricost</div></div></div>
 </section>
 
 <!-- TERMS -->
 <section class="terms-sec reveal" id="terms">
-  <div class="s-label"><span data-ru>Условия сотрудничества</span><span data-en>Partnership Terms</span></div>
-  <h2><span data-ru>Работаем с партнёрами</span><span data-en>Working with Partners</span></h2>
+  <div class="s-label"><span data-ru="">Условия сотрудничества</span><span data-en="">Partnership Terms</span></div>
+  <h2><span data-ru="">Работаем с партнёрами</span><span data-en="">Working with Partners</span></h2>
   <div class="terms-grid">
-    <div class="term-card reveal reveal-delay-1">
+    <div class="term-card reveal reveal-delay-1" onclick="openTerms('order')">
       <span class="term-icon">📦</span>
-      <div class="term-title"><span data-ru>Объём и условия</span><span data-en>Volume & Terms</span></div>
-      <p class="term-desc">
-        <span data-ru>Условия заказа обсуждаются индивидуально. Чем больше объём — тем выгоднее цена. Для постоянных партнёров приоритетные условия.</span>
-        <span data-en>Order terms are discussed individually. The larger the volume — the better the price. Priority terms for regular partners.</span>
-      </p>
-      <a href="#contact" class="term-cta"><span data-ru>Запросить условия →</span><span data-en>Request terms →</span></a>
+      <div class="term-title"><span data-ru="">Объём и условия</span><span data-en="">Volume &amp; Terms</span></div>
+      <p class="term-desc"><span data-ru="">Индивидуальный подход к каждому партнёру. Чем больше объём — тем выгоднее цена.</span><span data-en="">Individual approach to each partner. The larger the volume, the better the price.</span></p>
+      <span class="term-cta"><span data-ru="">Подробнее →</span><span data-en="">Learn more →</span></span>
     </div>
-    <div class="term-card reveal reveal-delay-2">
+    <div class="term-card reveal reveal-delay-2" onclick="openTerms('pricing')">
       <span class="term-icon">💵</span>
-      <div class="term-title"><span data-ru>Цены и прайсы</span><span data-en>Pricing</span></div>
-      <p class="term-desc">
-        <span data-ru>Цены на сайте актуальны. Логистика, таможня и доставка рассчитываются отдельно после запроса. Оплата в USD.</span>
-        <span data-en>Site prices are current. Logistics, customs and delivery are calculated separately upon request. Payment in USD.</span>
-      </p>
-      <a href="#contact" class="term-cta"><span data-ru>Получить прайс →</span><span data-en>Get pricing →</span></a>
+      <div class="term-title"><span data-ru="">Цены и прайсы</span><span data-en="">Pricing</span></div>
+      <p class="term-desc"><span data-ru="">Цены на сайте актуальны. Логистика и таможня рассчитываются отдельно. Оплата в USD.</span><span data-en="">Site prices are current. Logistics and customs calculated separately. Payment in USD.</span></p>
+      <span class="term-cta"><span data-ru="">Подробнее →</span><span data-en="">Learn more →</span></span>
     </div>
-    <div class="term-card reveal reveal-delay-3">
+    <div class="term-card reveal reveal-delay-3" onclick="openTerms('partner')">
       <span class="term-icon">🤝</span>
-      <div class="term-title"><span data-ru>Партнёрская программа</span><span data-en>Partner Program</span></div>
-      <p class="term-desc">
-        <span data-ru>Персональный менеджер, ежемесячные обновления прайсов, первый доступ к новинкам и эксклюзивные условия для долгосрочных клиентов.</span>
-        <span data-en>Personal manager, monthly price updates, first access to new products and exclusive terms for long-term clients.</span>
-      </p>
-      <a href="https://wa.me/12677730711" target="_blank" class="term-cta"><span data-ru>Написать в WhatsApp →</span><span data-en>WhatsApp us →</span></a>
+      <div class="term-title"><span data-ru="">Партнёрская программа</span><span data-en="">Partner Program</span></div>
+      <p class="term-desc"><span data-ru="">Персональный менеджер, ежемесячные обновления прайсов, первый доступ к новинкам.</span><span data-en="">Personal manager, monthly price updates, first access to new products.</span></p>
+      <span class="term-cta"><span data-ru="">Подробнее →</span><span data-en="">Learn more →</span></span>
     </div>
   </div>
 </section>
 
 <!-- HOW -->
 <section class="how-sec reveal">
-  <div class="s-label"><span data-ru>Схема работы</span><span data-en>How It Works</span></div>
-  <h2><span data-ru>Четыре шага к сделке</span><span data-en>Four Steps to a Deal</span></h2>
+  <div class="s-label"><span data-ru="">Схема работы</span><span data-en="">How It Works</span></div>
+  <h2><span data-ru="">Четыре шага к сделке</span><span data-en="">Four Steps to a Deal</span></h2>
   <div class="steps">
     <div class="step reveal reveal-delay-1">
       <div class="step-line"></div>
       <div class="snum">01</div>
-      <div class="stit"><span data-ru>Выбираете товар</span><span data-en>Choose Products</span></div>
-      <p class="sdesc"><span data-ru>Изучаете каталог, отмечаете нужные позиции. Все цены указаны на сайте.</span><span data-en>Browse the catalog and select the products you need. All prices are on the site.</span></p>
+      <div class="stit"><span data-ru="">Выбираете товар</span><span data-en="">Choose Products</span></div>
+      <p class="sdesc"><span data-ru="">Изучаете каталог, отмечаете нужные позиции. Все цены указаны на сайте.</span><span data-en="">Browse the catalog and select the products you need.</span></p>
     </div>
     <div class="step reveal reveal-delay-2">
       <div class="step-line"></div>
       <div class="snum">02</div>
-      <div class="stit"><span data-ru>Отправляете запрос</span><span data-en>Send a Request</span></div>
-      <p class="sdesc"><span data-ru>Добавляете в корзину и отправляете запрос с контактами — или пишете напрямую в WhatsApp.</span><span data-en>Add to cart and send a request with your contacts — or write directly via WhatsApp.</span></p>
+      <div class="stit"><span data-ru="">Отправляете запрос</span><span data-en="">Send Request</span></div>
+      <p class="sdesc"><span data-ru="">Добавляете в корзину и отправляете запрос — или пишете напрямую в WhatsApp.</span><span data-en="">Add to cart and send request — or write via WhatsApp.</span></p>
     </div>
     <div class="step reveal reveal-delay-3">
       <div class="step-line"></div>
       <div class="snum">03</div>
-      <div class="stit"><span data-ru>Согласуем и отгружаем</span><span data-en>Confirm & Ship</span></div>
-      <p class="sdesc"><span data-ru>Рассчитываем логистику, выставляем инвойс, отгружаем со склада в США.</span><span data-en>We calculate logistics, issue an invoice, and ship from the US warehouse.</span></p>
+      <div class="stit"><span data-ru="">Согласуем и отгружаем</span><span data-en="">Confirm &amp; Ship</span></div>
+      <p class="sdesc"><span data-ru="">Рассчитываем логистику, выставляем инвойс, отгружаем со склада в США.</span><span data-en="">We calculate logistics, issue invoice, ship from US warehouse.</span></p>
     </div>
     <div class="step reveal reveal-delay-4">
       <div class="step-line"></div>
       <div class="snum">04</div>
-      <div class="stit"><span data-ru>Развиваемся вместе</span><span data-en>Grow Together</span></div>
-      <p class="sdesc"><span data-ru>Персональный менеджер и лучшие условия для постоянных партнёров.</span><span data-en>Personal manager and best terms for regular partners.</span></p>
+      <div class="stit"><span data-ru="">Развиваемся вместе</span><span data-en="">Grow Together</span></div>
+      <p class="sdesc"><span data-ru="">Персональный менеджер и лучшие условия для постоянных партнёров.</span><span data-en="">Personal manager and best terms for regular partners.</span></p>
     </div>
   </div>
 </section>
 
 <!-- CTA -->
 <section class="cta-sec reveal" id="contact">
-  <div class="cta-img"></div>
+  <div class="cta-bg"></div>
   <div class="cta-inner">
-    <div class="s-label"><span data-ru>Начать работу</span><span data-en>Get Started</span></div>
-    <h2><span data-ru>Получите коммерческое<br><em>предложение</em></span><span data-en>Request a commercial<br><em>proposal</em></span></h2>
-    <p class="s-sub"><span data-ru>Напишите нам — вышлем каталог с ценами и рассчитаем условия в течение 24 часов.</span><span data-en>Write to us — we'll send the catalog with prices and calculate terms within 24 hours.</span></p>
+    <div class="s-label"><span data-ru="">Начать работу</span><span data-en="">Get Started</span></div>
+    <h2><span data-ru="">Получите коммерческое<br><em>предложение</em></span><span data-en="">Request a commercial<br><em>proposal</em></span></h2>
+    <p class="s-sub" style="margin:0 auto 40px;max-width:500px;text-align:center"><span data-ru="">Напишите нам — вышлем каталог с ценами и рассчитаем условия в течение 24 часов.</span><span data-en="">Write to us — we'll send the catalog with prices and terms within 24 hours.</span></p>
     <div class="btns" style="justify-content:center">
       <a href="mailto:contact01@kgsilkroad.com" class="btn-gold">contact01@kgsilkroad.com</a>
-      <a href="https://wa.me/12677730711" target="_blank" class="btn-wa">
-        <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+      <a href="https://wa.me/12677730711" target="_blank" class="btn-wa-hero">
+        <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"></path></svg>
         WhatsApp
       </a>
     </div>
     <div class="cta-contacts">
       <div class="cc"><span class="cc-lbl">Email</span><span class="cc-val">contact01@kgsilkroad.com</span></div>
-      <div class="cc"><span class="cc-lbl"><span data-ru>Телефон</span><span data-en>Phone</span></span><span class="cc-val">+1 (267) 773-0711</span></div>
-      <div class="cc"><span class="cc-lbl"><span data-ru>Производство</span><span data-en>Origin</span></span><span class="cc-val">США · Европа</span></div>
+      <div class="cc"><span class="cc-lbl"><span data-ru="">Телефон</span><span data-en="">Phone</span></span><span class="cc-val">+1 (267) 773-0711</span></div>
+      <div class="cc"><span class="cc-lbl"><span data-ru="">Производство</span><span data-en="">Origin</span></span><span class="cc-val">США · Европа</span></div>
     </div>
   </div>
 </section>
@@ -592,80 +866,88 @@ html[data-lang="ru"] [data-en]{display:none}
   <div class="foot-top">
     <div>
       <div class="foot-brand">KG Silkroad Inc.</div>
-      <div class="foot-tagline"><span data-ru>Витамины, спортпит и пептиды — оптовые поставки</span><span data-en>Vitamins, sports nutrition & peptides — wholesale supply</span></div>
+      <div class="foot-tagline"><span data-ru="">Витамины, спортпит и пептиды — оптовые поставки</span><span data-en="">Vitamins, sports nutrition &amp; peptides — wholesale supply</span></div>
+      <a href="https://www.instagram.com/silkroad.vitamins" target="_blank" class="foot-ig">
+        <svg viewBox="0 0 24 24"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"></path></svg>
+        @silkroad.vitamins
+      </a>
     </div>
     <div class="foot-cols">
       <div>
-        <div class="foot-col-title"><span data-ru>Каталог</span><span data-en>Catalog</span></div>
+        <div class="foot-col-title"><span data-ru="">Каталог</span><span data-en="">Catalog</span></div>
         <ul class="foot-links">
-          <li><a href="#vitamins"><span data-ru>Витамины</span><span data-en>Vitamins</span></a></li>
-          <li><a href="#sports"><span data-ru>Спортпит</span><span data-en>Sports Nutrition</span></a></li>
-          <li><a href="#peptides"><span data-ru>Пептиды</span><span data-en>Peptides</span></a></li>
-          <li><a href="#brands"><span data-ru>Все бренды</span><span data-en>All Brands</span></a></li>
+          <li><a href="#vitamins"><span data-ru="">Витамины</span><span data-en="">Vitamins</span></a></li>
+          <li><a href="#sports"><span data-ru="">Спортпит</span><span data-en="">Sports Nutrition</span></a></li>
+          <li><a href="#peptides"><span data-ru="">Пептиды</span><span data-en="">Peptides</span></a></li>
+          <li><a href="#brands"><span data-ru="">Все бренды</span><span data-en="">All Brands</span></a></li>
         </ul>
       </div>
       <div>
-        <div class="foot-col-title"><span data-ru>Компания</span><span data-en>Company</span></div>
+        <div class="foot-col-title"><span data-ru="">Компания</span><span data-en="">Company</span></div>
         <ul class="foot-links">
-          <li><a href="#terms"><span data-ru>Условия работы</span><span data-en>Terms</span></a></li>
-          <li><a href="#contact"><span data-ru>Контакты</span><span data-en>Contacts</span></a></li>
+          <li><a href="#terms"><span data-ru="">Условия работы</span><span data-en="">Terms</span></a></li>
+          <li><a href="#contact"><span data-ru="">Контакты</span><span data-en="">Contacts</span></a></li>
         </ul>
       </div>
       <div>
-        <div class="foot-col-title"><span data-ru>Связь</span><span data-en>Contact</span></div>
+        <div class="foot-col-title"><span data-ru="">Связь</span><span data-en="">Contact</span></div>
         <ul class="foot-links">
           <li><a href="mailto:contact01@kgsilkroad.com">contact01@kgsilkroad.com</a></li>
           <li><a href="tel:+12677730711">+1 (267) 773-0711</a></li>
           <li><a href="https://wa.me/12677730711" target="_blank">WhatsApp</a></li>
+          <li><a href="https://www.instagram.com/silkroad.vitamins" target="_blank">Instagram</a></li>
         </ul>
       </div>
     </div>
   </div>
   <div class="foot-bottom">
     <span class="fcopy">© 2026 KG Silkroad Inc.</span>
-    <span class="fcopy" style="opacity:0.15">USA · Wholesale Distribution</span>
+    <span class="fcopy" style="opacity:0.14">USA · Wholesale Distribution</span>
   </div>
 </footer>
 
 <!-- CART DRAWER -->
 <div class="cart-drawer" id="cart-drawer">
   <div class="cart-header">
-    <div class="cart-title"><span data-ru>Запрос</span><span data-en>Request</span></div>
+    <div class="cart-title"><span data-ru="">Запрос</span><span data-en="">Request</span></div>
     <button class="cart-close" onclick="toggleCart()">✕</button>
   </div>
-  <div class="cart-items" id="cart-items">
-    <div class="cart-empty" id="cart-empty">
-      <span data-ru>Корзина пуста.<br>Добавьте товары из каталога.</span>
-      <span data-en>Cart is empty.<br>Add products from the catalog.</span>
-    </div>
-  </div>
+  <div class="cart-items" id="cart-items"><div class="cart-empty" id="cart-empty" style="display: block;">
+      <span data-ru="">Корзина пуста.<br>Добавьте товары из каталога.</span>
+      <span data-en="">Cart is empty.<br>Add products from the catalog.</span>
+    </div></div>
   <div class="cart-footer">
     <div class="cart-total">
-      <span class="ct-lbl"><span data-ru>Итого (без логистики)</span><span data-en>Total (ex logistics)</span></span>
-      <span class="ct-val" id="cart-total">$0</span>
+      <span class="ct-lbl"><span data-ru="">Итого (без логистики)</span><span data-en="">Total (ex logistics)</span></span>
+      <span class="ct-val" id="cart-total">$0.00</span>
     </div>
-    <p class="cart-note">
-      <span data-ru>Стоимость доставки, таможни и прочие расходы рассчитываются отдельно и будут указаны в инвойсе.</span>
-      <span data-en>Shipping, customs and other costs are calculated separately and will be specified in the invoice.</span>
-    </p>
+    <p class="cart-note"><span data-ru="">Доставка, таможня и прочие расходы рассчитываются отдельно и будут указаны в инвойсе.</span><span data-en="">Shipping, customs and other costs calculated separately and specified in invoice.</span></p>
     <div class="req-form">
-      <input class="req-input" id="req-name" placeholder="Имя / Name" required>
+      <input class="req-input" id="req-name" placeholder="Имя / Name" required="">
       <input class="req-input" id="req-company" placeholder="Компания / Company">
-      <input class="req-input" id="req-phone" placeholder="Телефон / Phone" required>
-      <input class="req-input" id="req-email" placeholder="Email" required>
-      <button class="req-submit" onclick="submitRequest()">
-        <span data-ru>Отправить запрос</span>
-        <span data-en>Send Request</span>
-      </button>
+      <input class="req-input" id="req-phone" placeholder="Телефон / Phone" required="">
+      <input class="req-input" id="req-email" placeholder="Email">
+      <button class="req-submit" onclick="submitRequest()"><span data-ru="">Отправить запрос</span><span data-en="">Send Request</span></button>
       <a href="https://wa.me/12677730711" target="_blank" class="req-wa">
-        <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
-        <span data-ru>Написать в WhatsApp</span><span data-en>Write on WhatsApp</span>
+        <svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"></path></svg>
+        <span data-ru="">Написать в WhatsApp</span><span data-en="">Write on WhatsApp</span>
       </a>
       <div class="success-msg" id="success-msg">
-        <span data-ru>✓ Запрос отправлен! Свяжемся с вами в течение 24 часов.</span>
-        <span data-en>✓ Request sent! We'll contact you within 24 hours.</span>
+        <span data-ru="">✓ Запрос отправлен! Свяжемся в течение 24 часов.</span>
+        <span data-en="">✓ Request sent! We'll contact you within 24 hours.</span>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- TERMS MODAL -->
+<div class="terms-modal" id="terms-modal" onclick="closeTermsModal(event)">
+  <div class="terms-modal-inner">
+    <div class="tm-head">
+      <div class="tm-title" id="tm-title"></div>
+      <button class="tm-close" onclick="document.getElementById('terms-modal').classList.remove('open')">✕</button>
+    </div>
+    <div class="tm-body" id="tm-body"></div>
   </div>
 </div>
 
@@ -674,7 +956,7 @@ html[data-lang="ru"] [data-en]{display:none}
   <div class="modal">
     <div class="mhead">
       <div>
-        <div id="mt" style="font-size:0.58rem;letter-spacing:0.2em;text-transform:uppercase;color:var(--gold);opacity:0.55;margin-bottom:8px"></div>
+        <div id="mt" style="font-size:0.56rem;letter-spacing:0.2em;text-transform:uppercase;color:var(--gold);opacity:0.58;margin-bottom:7px"></div>
         <div class="mttl" id="mn"></div>
       </div>
       <button class="mx" onclick="closeMB()">✕</button>
@@ -683,36 +965,32 @@ html[data-lang="ru"] [data-en]{display:none}
       <div class="attrs" id="ma"></div>
       <div id="mp"></div>
       <div class="mdesc" id="md"></div>
-      <button class="modal-add-cart" id="modal-cart-btn" onclick="addFromModal()">
-        <span data-ru>Добавить в запрос</span><span data-en>Add to Request</span>
-      </button>
+      <button class="modal-add-cart" onclick="addFromModal()"><span data-ru="">Добавить в запрос</span><span data-en="">Add to Request</span></button>
     </div>
   </div>
 </div>
 
 <script>
-// CANVAS — molecules + leaves
+// CANVAS
 const cv=document.getElementById('canvas'),cx=cv.getContext('2d');
 let W,H;
 function resize(){W=cv.width=window.innerWidth;H=cv.height=window.innerHeight}
 resize();window.addEventListener('resize',resize);
 
-// Molecule class
-class Molecule {
+class Molecule{
   constructor(){this.reset(true)}
   reset(init){
     this.x=init?Math.random()*W:Math.random()*W;
     this.y=init?Math.random()*H:(Math.random()>0.5?-20:H+20);
     this.type=Math.random()>0.5?'circle':'hex';
-    this.r=Math.random()*3+1;
-    this.speed=Math.random()*0.18+0.04;
+    this.r=Math.random()*2.8+0.8;
+    this.speed=Math.random()*0.2+0.04;
     this.angle=Math.random()*Math.PI*2;
     this.turn=(Math.random()-0.5)*0.007;
-    this.alpha=Math.random()*0.5+0.12;
-    this.gold=Math.random()>0.6;
+    this.alpha=Math.random()*0.55+0.15;
+    this.gold=Math.random()>0.58;
     this.ph=Math.random()*Math.PI*2;
     this.ps=Math.random()*0.012+0.004;
-    this.bonds=[];
   }
   update(){
     this.angle+=this.turn;
@@ -722,83 +1000,59 @@ class Molecule {
     if(this.x<-30||this.x>W+30||this.y<-30||this.y>H+30)this.reset(false);
   }
   draw(){
-    const a=this.alpha*(0.7+0.3*Math.sin(this.ph));
+    const a=this.alpha*(0.72+0.28*Math.sin(this.ph));
     const r=this.r*(0.88+0.12*Math.sin(this.ph));
     cx.globalAlpha=a;
     if(this.type==='circle'){
       cx.beginPath();cx.arc(this.x,this.y,r,0,Math.PI*2);
       cx.fillStyle=this.gold?'#C4973A':'#2d8a55';
-      cx.shadowColor=this.gold?'rgba(196,151,58,0.6)':'rgba(31,107,69,0.5)';
-      cx.shadowBlur=8;cx.fill();cx.shadowBlur=0;
-    } else {
-      // Hexagon
+      cx.shadowColor=this.gold?'rgba(196,151,58,0.7)':'rgba(31,107,69,0.6)';
+      cx.shadowBlur=10;cx.fill();cx.shadowBlur=0;
+    }else{
       cx.beginPath();
-      for(let i=0;i<6;i++){
-        const angle=i*Math.PI/3;
-        const px=this.x+r*1.5*Math.cos(angle);
-        const py=this.y+r*1.5*Math.sin(angle);
-        i===0?cx.moveTo(px,py):cx.lineTo(px,py);
-      }
+      for(let i=0;i<6;i++){const a2=i*Math.PI/3;const px=this.x+r*1.5*Math.cos(a2);const py=this.y+r*1.5*Math.sin(a2);i===0?cx.moveTo(px,py):cx.lineTo(px,py)}
       cx.closePath();
-      cx.strokeStyle=this.gold?'rgba(196,151,58,0.7)':'rgba(31,107,69,0.6)';
+      cx.strokeStyle=this.gold?'rgba(196,151,58,0.75)':'rgba(45,138,85,0.65)';
       cx.lineWidth=0.6;cx.stroke();
     }
     cx.globalAlpha=1;
   }
 }
 
-// Leaf class
-class Leaf {
+class Leaf{
   constructor(){this.reset(true)}
   reset(init){
     this.x=init?Math.random()*W:Math.random()*W;
     this.y=init?Math.random()*H:-20;
-    this.size=Math.random()*18+8;
-    this.speed=Math.random()*0.3+0.08;
-    this.drift=Math.random()*0.3-0.15;
+    this.size=Math.random()*16+7;
+    this.speed=Math.random()*0.28+0.07;
+    this.drift=Math.random()*0.28-0.14;
     this.rot=Math.random()*Math.PI*2;
-    this.rotSpeed=(Math.random()-0.5)*0.008;
-    this.alpha=Math.random()*0.18+0.05;
-    this.green=`rgba(${20+Math.floor(Math.random()*30)},${90+Math.floor(Math.random()*40)},${40+Math.floor(Math.random()*30)}`;
+    this.rotSpeed=(Math.random()-0.5)*0.007;
+    this.alpha=Math.random()*0.2+0.06;
+    this.green=`rgba(${18+Math.floor(Math.random()*28)},${85+Math.floor(Math.random()*44)},${38+Math.floor(Math.random()*28)}`;
   }
-  update(){
-    this.y+=this.speed;
-    this.x+=this.drift;
-    this.rot+=this.rotSpeed;
-    if(this.y>H+30)this.reset(false);
-  }
+  update(){this.y+=this.speed;this.x+=this.drift;this.rot+=this.rotSpeed;if(this.y>H+30)this.reset(false)}
   draw(){
-    cx.save();
-    cx.globalAlpha=this.alpha;
-    cx.translate(this.x,this.y);
-    cx.rotate(this.rot);
-    cx.beginPath();
-    cx.ellipse(0,0,this.size*0.4,this.size,0,0,Math.PI*2);
-    cx.fillStyle=`${this.green},0.8)`;
-    cx.fill();
-    cx.beginPath();
-    cx.moveTo(0,-this.size);
-    cx.lineTo(0,this.size);
-    cx.strokeStyle=`${this.green},0.5)`;
-    cx.lineWidth=0.5;cx.stroke();
-    cx.restore();
-    cx.globalAlpha=1;
+    cx.save();cx.globalAlpha=this.alpha;
+    cx.translate(this.x,this.y);cx.rotate(this.rot);
+    cx.beginPath();cx.ellipse(0,0,this.size*0.38,this.size,0,0,Math.PI*2);
+    cx.fillStyle=`${this.green},0.85)`;cx.fill();
+    cx.beginPath();cx.moveTo(0,-this.size);cx.lineTo(0,this.size);
+    cx.strokeStyle=`${this.green},0.5)`;cx.lineWidth=0.5;cx.stroke();
+    cx.restore();cx.globalAlpha=1;
   }
 }
 
-const molecules=Array.from({length:120},()=>new Molecule());
-const leaves=Array.from({length:25},()=>new Leaf());
+const molecules=Array.from({length:130},()=>new Molecule());
+const leaves=Array.from({length:22},()=>new Leaf());
 
 function drawBonds(){
   for(let i=0;i<molecules.length;i++){
     for(let j=i+1;j<molecules.length;j++){
-      const dx=molecules[i].x-molecules[j].x;
-      const dy=molecules[i].y-molecules[j].y;
+      const dx=molecules[i].x-molecules[j].x,dy=molecules[i].y-molecules[j].y;
       const d=Math.sqrt(dx*dx+dy*dy);
-      if(d<80){
-        cx.beginPath();cx.moveTo(molecules[i].x,molecules[i].y);cx.lineTo(molecules[j].x,molecules[j].y);
-        cx.strokeStyle=`rgba(196,151,58,${0.07*(1-d/80)})`;cx.lineWidth=0.4;cx.stroke();
-      }
+      if(d<85){cx.beginPath();cx.moveTo(molecules[i].x,molecules[i].y);cx.lineTo(molecules[j].x,molecules[j].y);cx.strokeStyle=`rgba(196,151,58,${0.08*(1-d/85)})`;cx.lineWidth=0.4;cx.stroke()}
     }
   }
 }
@@ -813,65 +1067,92 @@ function frame(){
 frame();
 
 // SCROLL REVEAL
-const observer=new IntersectionObserver(entries=>{
-  entries.forEach(e=>{if(e.isIntersecting)e.target.classList.add('visible')});
-},{threshold:0.1});
+const observer=new IntersectionObserver(entries=>{entries.forEach(e=>{if(e.isIntersecting)e.target.classList.add('visible')})},{threshold:0.08});
 document.querySelectorAll('.reveal').forEach(el=>observer.observe(el));
 
 // LANG
 function setLang(lang){
   document.documentElement.setAttribute('data-lang',lang);
-  document.querySelectorAll('.lang-btn').forEach(b=>{
-    b.classList.toggle('active',b.textContent===lang.toUpperCase());
-  });
+  document.querySelectorAll('.lang-btn').forEach(b=>b.classList.toggle('active',b.textContent===lang.toUpperCase()));
 }
 
-// DATA
-const pepData=[
-  {name:"5-AMINO-1MQ CAPSULES",tag:"Метаболизм",form:"Капсулы",cas:"1401963-15-2",formula:"C7H11N3",weight:"137.18 g/mol",
-   pricing:[{q:"5–29",p:"$211.61"},{q:"30–99",p:"$197.51"},{q:"100–249",p:"$183.40"},{q:"250–499",p:"$169.29"},{q:"500–999",p:"$155.18"},{q:"1000+",p:"$141.08"}],
-   desc:"Ингибитор фермента NNMT. Применяется в исследованиях энергетического обмена и регуляции жировой ткани. 60 капсул, чистота ≥98% (ВЭЖХ).",price:211.61},
-  {name:"BPC-157",tag:"Регенерация",form:"Лиофилизированный порошок",cas:"137525-51-0",formula:"C62H98N16O22",weight:"1419.5 g/mol",
-   pricing:[{q:"5–29",p:"$51.64"},{q:"30–99",p:"$48.20"},{q:"100+",p:"$44.75"}],
-   desc:"Синтетический пентадекапептид. Исследуется в области восстановления тканей и нейропротекции. 5 мг, чистота ≥99%.",price:51.64},
-  {name:"AOD-9604",tag:"Жировой метаболизм",form:"Лиофилизированный порошок",cas:"221231-10-3",formula:"C78H123N23O23S2",weight:"1817.1 g/mol",
-   pricing:[{q:"5–29",p:"$45.56"},{q:"30–99",p:"$42.53"},{q:"100+",p:"$39.51"}],
-   desc:"Модифицированный С-концевой фрагмент гормона роста человека. 5 мг на флакон.",price:45.56},
-  {name:"SEMAGLUTIDE 5MG",tag:"GLP-1",form:"Лиофилизированный порошок",cas:"910463-68-2",formula:"C187H291N45O59",weight:"4113.6 g/mol",
-   pricing:[{q:"5–29",p:"$120.15"},{q:"30–99",p:"$112.19"},{q:"100+",p:"$104.22"}],
-   desc:"Агонист рецептора GLP-1. Применяется в метаболических исследованиях.",price:120.15},
-  {name:"TIRZEPATIDE 5MG",tag:"GIP/GLP-1",form:"Лиофилизированный порошок",cas:"2023788-19-2",formula:"C225H348N48O68",weight:"4813.5 g/mol",
-   pricing:[{q:"5–29",p:"$155.25"},{q:"30–99",p:"$144.99"},{q:"100+",p:"$134.73"}],
-   desc:"Двойной агонист рецепторов GIP и GLP-1. Применяется в исследованиях метаболических нарушений.",price:155.25},
-  {name:"IPAMORELIN 5MG",tag:"Секретагог ГР",form:"Лиофилизированный порошок",cas:"170851-70-4",formula:"C38H49N9O5",weight:"711.9 g/mol",
-   pricing:[{q:"5–29",p:"$38.48"},{q:"30–99",p:"$35.91"},{q:"100+",p:"$33.35"}],
-   desc:"Селективный пептидный секретагог гормона роста. Чистота ≥99%, 5 мг на флакон.",price:38.48},
-];
+// MOBILE NAV
+function toggleNav(){
+  const nl=document.getElementById('nav-links');
+  const nt=document.getElementById('nav-toggle');
+  nl.classList.toggle('open');
+  nt.textContent=nl.classList.contains('open')?'✕':'☰';
+}
 
-const brands=["KAL Vitamins","Solaray","NOW Foods","Solgar","JNX Sports","1UP Nutrition","Redcon1","Rule 1","Jarrow Formulas","Thorne","Nature's Answer","Carlson Labs","Bluebonnet","Source Naturals","PEScience","MuscleTech","Rainbow Light","Zhou Nutrition","Vital Proteins","Superior Source","NutriBiotic","Enzymedica","Country Life","Nordic Naturals","Garden of Life","Nutrex","BSN","MusclePharm","Optimum Nutrition","American Health","Bragg","Double Wood","Nutricost","Pure Encapsulations"];
+// TERMS MODAL
+const termsContent={
+  order:{
+    ru:{title:'Объём и условия заказа',rows:[
+      {icon:'📦',h:'Минимальный заказ',p:'Минимальная сумма заказа обсуждается индивидуально в зависимости от бренда и направления.'},
+      {icon:'💰',h:'Гибкость цен',p:'Чем больше объём заказа — тем выгоднее цена. Скидки предоставляются при постоянном сотрудничестве.'},
+      {icon:'🔄',h:'Возможные изменения',p:'В связи с политикой производителей цены могут изменяться. Актуальные цены всегда подтверждаются перед оформлением заказа.'},
+      {icon:'🕐',h:'Приём заказов 24/7',p:'Запросы принимаются круглосуточно. Ответ — в течение 24 часов в рабочие дни.'}
+    ]},
+    en:{title:'Volume & Order Terms',rows:[
+      {icon:'📦',h:'Minimum Order',p:'Minimum order amount is discussed individually depending on brand and product line.'},
+      {icon:'💰',h:'Volume Pricing',p:'The larger the order — the better the price. Discounts available for regular partners.'},
+      {icon:'🔄',h:'Price Changes',p:'Prices may change due to manufacturer policy. Current prices are always confirmed before order processing.'},
+      {icon:'🕐',h:'Orders 24/7',p:'Requests accepted around the clock. Response within 24 hours on business days.'}
+    ]}
+  },
+  pricing:{
+    ru:{title:'Цены и прайсы',rows:[
+      {icon:'💵',h:'Цены на сайте',p:'Все цены на сайте актуальны и включают нашу маржу. Цены указаны в долларах США (USD).'},
+      {icon:'📅',h:'Обновление прайсов',p:'Прайс-листы обновляются ежемесячно в соответствии с изменениями цен производителей.'},
+      {icon:'🚚',h:'Логистика отдельно',p:'Стоимость доставки, таможенное оформление и прочие расходы рассчитываются индивидуально после запроса и указываются в инвойсе.'},
+      {icon:'💳',h:'Оплата',p:'Оплата в USD. Условия оплаты обсуждаются индивидуально с каждым партнёром.'}
+    ]},
+    en:{title:'Pricing',rows:[
+      {icon:'💵',h:'Site Prices',p:'All prices on the site are current and include our margin. Prices are in USD.'},
+      {icon:'📅',h:'Price Updates',p:'Price lists are updated monthly according to manufacturer price changes.'},
+      {icon:'🚚',h:'Logistics Separate',p:'Shipping, customs clearance and other costs are calculated individually and specified in the invoice.'},
+      {icon:'💳',h:'Payment',p:'Payment in USD. Payment terms are discussed individually with each partner.'}
+    ]}
+  },
+  partner:{
+    ru:{title:'Партнёрская программа',rows:[
+      {icon:'👤',h:'Персональный менеджер',p:'Каждому постоянному партнёру назначается персональный менеджер для оперативного решения всех вопросов.'},
+      {icon:'🎯',h:'Приоритетный доступ',p:'Постоянные партнёры получают первый доступ к новым позициям и эксклюзивным предложениям.'},
+      {icon:'📊',h:'Лучшие условия',p:'Долгосрочное сотрудничество открывает доступ к улучшенным ценовым условиям и гибким срокам.'},
+      {icon:'📲',h:'Прямая связь',p:'Прямой контакт через WhatsApp для оперативной коммуникации и быстрого решения вопросов.'}
+    ]},
+    en:{title:'Partner Program',rows:[
+      {icon:'👤',h:'Personal Manager',p:'Each regular partner is assigned a personal manager for prompt resolution of all issues.'},
+      {icon:'🎯',h:'Priority Access',p:'Regular partners get first access to new products and exclusive offers.'},
+      {icon:'📊',h:'Best Terms',p:'Long-term partnership opens access to improved pricing conditions and flexible terms.'},
+      {icon:'📲',h:'Direct Contact',p:'Direct WhatsApp contact for quick communication and fast issue resolution.'}
+    ]}
+  }
+};
+
+function openTerms(type){
+  const lang=document.documentElement.getAttribute('data-lang')||'ru';
+  const c=termsContent[type][lang];
+  document.getElementById('tm-title').textContent=c.title;
+  document.getElementById('tm-body').innerHTML=c.rows.map(r=>`
+    <div class="tm-row">
+      <div class="tm-icon">${r.icon}</div>
+      <div class="tm-text"><h4>${r.h}</h4><p>${r.p}</p></div>
+    </div>`).join('');
+  document.getElementById('terms-modal').classList.add('open');
+}
+function closeTermsModal(e){if(e.target===document.getElementById('terms-modal'))document.getElementById('terms-modal').classList.remove('open')}
 
 // CART
-let cart=[];
-let currentModal=null;
-let pepView='grid';
-
-function ourPrice(cost){
-  if(cost<50)return+(cost+4).toFixed(2);
-  if(cost<=100)return+(cost+10).toFixed(2);
-  return+(cost+20).toFixed(2);
-}
+let cart=[],currentModal=null;
 
 function addToCart(item){
-  const existing=cart.find(c=>c.name===item.name);
-  if(existing){existing.qty=(existing.qty||1)+1}
-  else{cart.push({...item,qty:1})}
+  const ex=cart.find(c=>c.name===item.name);
+  if(ex){ex.qty=(ex.qty||1)+1}else{cart.push({...item,qty:1})}
   updateCart();
 }
 
-function removeFromCart(name){
-  cart=cart.filter(c=>c.name!==name);
-  updateCart();
-}
+function removeFromCart(name){cart=cart.filter(c=>c.name!==name);updateCart()}
 
 function updateCart(){
   const count=cart.reduce((a,c)=>a+(c.qty||1),0);
@@ -879,136 +1160,111 @@ function updateCart(){
   document.getElementById('cart-count').textContent=count;
   document.getElementById('cart-count').classList.toggle('show',count>0);
   document.getElementById('cart-total').textContent='$'+total.toFixed(2);
-  const empty=document.getElementById('cart-empty');
   const items=document.getElementById('cart-items');
-  if(cart.length===0){
-    empty.style.display='block';
-    items.innerHTML='';items.appendChild(empty);
-  } else {
+  const empty=document.getElementById('cart-empty');
+  if(cart.length===0){empty.style.display='block';items.innerHTML='';items.appendChild(empty)}
+  else{
     empty.style.display='none';
-    const existingItems=items.querySelectorAll('.cart-item');
-    existingItems.forEach(el=>el.remove());
+    items.querySelectorAll('.cart-item').forEach(el=>el.remove());
     cart.forEach(item=>{
-      const div=document.createElement('div');
-      div.className='cart-item';
+      const div=document.createElement('div');div.className='cart-item';
       div.innerHTML=`<div class="ci-info"><div class="ci-name">${item.name}${item.qty>1?` ×${item.qty}`:''}</div><div class="ci-price">$${(item.price*(item.qty||1)).toFixed(2)}</div></div><button class="ci-remove" onclick="removeFromCart('${item.name.replace(/'/g,"\\'")}')">×</button>`;
       items.appendChild(div);
     });
   }
 }
 
-function toggleCart(){
-  document.getElementById('cart-drawer').classList.toggle('open');
-}
+function toggleCart(){document.getElementById('cart-drawer').classList.toggle('open')}
 
 function submitRequest(){
   const name=document.getElementById('req-name').value;
   const phone=document.getElementById('req-phone').value;
-  const email=document.getElementById('req-email').value;
   if(!name||!phone){alert('Пожалуйста, заполните имя и телефон');return}
   const company=document.getElementById('req-company').value;
-  let msg=`Новый запрос с сайта KG Silkroad:\n\nИмя: ${name}\nКомпания: ${company}\nТелефон: ${phone}\nEmail: ${email}\n\nТовары:\n`;
+  const email=document.getElementById('req-email').value;
+  let msg=`Запрос с сайта KG Silkroad:\n\nИмя: ${name}\nКомпания: ${company}\nТелефон: ${phone}\nEmail: ${email}\n\nТовары:\n`;
   cart.forEach(item=>{msg+=`- ${item.name} ×${item.qty||1}: $${(item.price*(item.qty||1)).toFixed(2)}\n`});
-  msg+=`\nИтого: $${cart.reduce((a,c)=>a+c.price*(c.qty||1),0).toFixed(2)}`;
-  const waLink=`https://wa.me/12677730711?text=${encodeURIComponent(msg)}`;
-  window.open(waLink,'_blank');
+  msg+=`\nИтого (без логистики): $${cart.reduce((a,c)=>a+c.price*(c.qty||1),0).toFixed(2)}`;
+  window.open(`https://wa.me/12677730711?text=${encodeURIComponent(msg)}`,'_blank');
   document.getElementById('success-msg').classList.add('show');
   setTimeout(()=>document.getElementById('success-msg').classList.remove('show'),5000);
 }
 
-// PEPTIDES
-let pepFilter='all';
-let pepSearch='';
-
-function renderPep(){
-  let list=pepData.filter(p=>{
-    if(pepFilter==='powder'&&!p.form.includes('порошок'))return false;
-    if(pepFilter==='capsule'&&!p.form.includes('Капсулы'))return false;
-    if(pepSearch&&!p.name.toLowerCase().includes(pepSearch.toLowerCase()))return false;
-    return true;
-  });
-  if(pepView==='grid'){
-    document.getElementById('pep-grid').style.display='grid';
-    document.getElementById('pep-table').style.display='none';
-    document.getElementById('pep-grid').innerHTML=list.map((p,i)=>`
-      <div class="pcard" style="animation:fadeUp 0.5s ${i*0.06}s ease both">
-        <div class="pimg">🧬</div>
-        <div class="ptag">${p.tag}</div>
-        <div class="pname">${p.name}</div>
-        <div class="psize">${p.form} · CAS: ${p.cas}</div>
-        <div class="pfooter">
-          <div class="pprice">$${p.price.toFixed(2)}<small>/ ед.</small></div>
-          <div style="display:flex;gap:8px">
-            <button class="add-cart" onclick="event.stopPropagation();addToCart({name:'${p.name.replace(/'/g,"\\'")}',price:${p.price}})">+ Запрос</button>
-            <button class="add-cart" onclick="openM(${pepData.indexOf(p)})">Детали</button>
-          </div>
-        </div>
-      </div>`).join('');
-  } else {
-    document.getElementById('pep-grid').style.display='none';
-    document.getElementById('pep-table').style.display='block';
-    document.getElementById('pep-tbody').innerHTML=list.map(p=>`
-      <tr>
-        <td><strong style="opacity:0.85">${p.name}</strong></td>
-        <td>${p.form}</td>
-        <td style="font-family:monospace;font-size:0.75rem">${p.cas}</td>
-        <td class="price-cell">$${p.price.toFixed(2)}</td>
-        <td><button class="add-cart" onclick="addToCart({name:'${p.name.replace(/'/g,"\\'")}',price:${p.price}})">+ Запрос</button></td>
-      </tr>`).join('');
-  }
-}
-
-function filterP(f,btn){
-  pepFilter=f;
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-  btn.classList.add('active');
-  renderPep();
-}
-
-function searchPeptides(q){pepSearch=q;renderPep()}
-
-function setView(v,sec){
-  pepView=v;
-  document.querySelectorAll('.view-btn').forEach(b=>b.classList.remove('active'));
-  event.target.classList.add('active');
-  renderPep();
-}
+// PEPTIDES DATA
+const pepData=[
+  {name:"5-AMINO-1MQ CAPSULES",tag:"Метаболизм",form:"Капсулы",cas:"1401963-15-2",formula:"C7H11N3",weight:"137.18 g/mol",pricing:[{q:"5–29",p:"$211.61"},{q:"30–99",p:"$197.51"},{q:"100–249",p:"$183.40"},{q:"250+",p:"$155.18"}],desc:"Ингибитор фермента NNMT. Применяется в исследованиях энергетического обмена и регуляции жировой ткани. 60 капсул, чистота ≥98%.",price:211.61},
+  {name:"BPC-157",tag:"Регенерация",form:"Лиофилизированный порошок",cas:"137525-51-0",formula:"C62H98N16O22",weight:"1419.5 g/mol",pricing:[{q:"5–29",p:"$51.64"},{q:"30–99",p:"$48.20"},{q:"100+",p:"$44.75"}],desc:"Синтетический пентадекапептид. Исследуется в области восстановления тканей и нейропротекции. 5 мг, чистота ≥99%.",price:51.64},
+  {name:"AOD-9604",tag:"Метаболизм",form:"Лиофилизированный порошок",cas:"221231-10-3",formula:"C78H123N23O23S2",weight:"1817.1 g/mol",pricing:[{q:"5–29",p:"$45.56"},{q:"30–99",p:"$42.53"},{q:"100+",p:"$39.51"}],desc:"Модифицированный С-концевой фрагмент гормона роста человека. 5 мг на флакон.",price:45.56},
+  {name:"SEMAGLUTIDE 5MG",tag:"GLP-1",form:"Лиофилизированный порошок",cas:"910463-68-2",formula:"C187H291N45O59",weight:"4113.6 g/mol",pricing:[{q:"5–29",p:"$120.15"},{q:"30–99",p:"$112.19"},{q:"100+",p:"$104.22"}],desc:"Агонист рецептора GLP-1. Применяется в метаболических исследованиях.",price:120.15},
+  {name:"TIRZEPATIDE 5MG",tag:"GIP/GLP-1",form:"Лиофилизированный порошок",cas:"2023788-19-2",formula:"C225H348N48O68",weight:"4813.5 g/mol",pricing:[{q:"5–29",p:"$155.25"},{q:"30–99",p:"$144.99"},{q:"100+",p:"$134.73"}],desc:"Двойной агонист рецепторов GIP и GLP-1. Применяется в исследованиях метаболических нарушений.",price:155.25},
+  {name:"IPAMORELIN 5MG",tag:"Секретагог ГР",form:"Лиофилизированный порошок",cas:"170851-70-4",formula:"C38H49N9O5",weight:"711.9 g/mol",pricing:[{q:"5–29",p:"$38.48"},{q:"30–99",p:"$35.91"},{q:"100+",p:"$33.35"}],desc:"Селективный пептидный секретагог гормона роста. Чистота ≥99%, 5 мг на флакон.",price:38.48},
+];
 
 // MODAL
 function openM(i){
-  const p=pepData[i];
-  currentModal=p;
+  const p=pepData[i];currentModal=p;
   document.getElementById('mt').textContent=p.tag;
   document.getElementById('mn').textContent=p.name;
-  document.getElementById('ma').innerHTML=`
-    <div class="attr"><div class="albl">Форма</div><div class="aval">${p.form}</div></div>
-    <div class="attr"><div class="albl">CAS</div><div class="aval">${p.cas}</div></div>
-    <div class="attr"><div class="albl">Формула</div><div class="aval">${p.formula}</div></div>
-    <div class="attr"><div class="albl">Молекулярный вес</div><div class="aval">${p.weight}</div></div>`;
-  document.getElementById('mp').innerHTML=`
-    <div class="s-label" style="font-size:0.6rem;margin-top:0">Оптовые цены</div>
-    <table class="ptbl"><thead><tr><th>Количество</th><th>Цена за единицу</th></tr></thead>
-    <tbody>${p.pricing.map(r=>`<tr><td>${r.q}</td><td class="pv">${r.p}</td></tr>`).join('')}</tbody></table>`;
+  document.getElementById('ma').innerHTML=`<div class="attr"><div class="albl">Форма</div><div class="aval">${p.form}</div></div><div class="attr"><div class="albl">CAS</div><div class="aval">${p.cas}</div></div><div class="attr"><div class="albl">Формула</div><div class="aval">${p.formula}</div></div><div class="attr"><div class="albl">Молекулярный вес</div><div class="aval">${p.weight}</div></div>`;
+  document.getElementById('mp').innerHTML=`<div class="s-label" style="font-size:0.58rem;margin-top:0">Оптовые цены</div><table class="ptbl"><thead><tr><th>Количество</th><th>Цена за единицу</th></tr></thead><tbody>${p.pricing.map(r=>`<tr><td>${r.q}</td><td class="pv">${r.p}</td></tr>`).join('')}</tbody></table>`;
   document.getElementById('md').textContent=p.desc;
   document.getElementById('ov').classList.add('open');
 }
 function closeM(e){if(e.target===document.getElementById('ov'))document.getElementById('ov').classList.remove('open')}
 function closeMB(){document.getElementById('ov').classList.remove('open')}
-function addFromModal(){
-  if(currentModal){
-    addToCart({name:currentModal.name,price:currentModal.price});
-    closeMB();
-    toggleCart();
-  }
-}
+function addFromModal(){if(currentModal){addToCart({name:currentModal.name,price:currentModal.price});closeMB();toggleCart()}}
 
 // BRANDS
+const brands=["KAL Vitamins","Solaray","NOW Foods","Solgar","JNX Sports","1UP Nutrition","Redcon1","Rule 1","Jarrow Formulas","Thorne","Nature's Answer","Carlson Labs","Bluebonnet","Source Naturals","PEScience","MuscleTech","Rainbow Light","Zhou Nutrition","Vital Proteins","Superior Source","NutriBiotic","Enzymedica","Country Life","Nordic Naturals","Garden of Life","Nutrex","BSN","MusclePharm","Optimum Nutrition","American Health","Bragg","Double Wood","Nutricost"];
 const t=document.getElementById('btrack');
 t.innerHTML=[...brands,...brands].map(b=>`<div class="bpill">${b}</div>`).join('');
 
-// INIT
-renderPep();
 updateCart();
+
+// ── APPLE / STRIPE PARALLAX SCROLL ──────────────────────────────
+(function(){
+  const heroEl    = document.querySelector('.hero');
+  const heroBg    = document.querySelector('.hero-img');
+  const heroInner = document.querySelector('.hero-inner');
+  if(!heroEl||!heroBg||!heroInner) return;
+
+  // How tall is the hero?
+  function heroH(){ return heroEl.offsetHeight; }
+
+  function onScroll(){
+    const y = window.scrollY;
+    const h = heroH();
+
+    // ── 1. TEXT: starts fading at 8 % scroll, gone by 45 %
+    const textStart = h * 0.08;
+    const textEnd   = h * 0.45;
+    const textP = Math.min(Math.max((y - textStart) / (textEnd - textStart), 0), 1);
+    const textOpacity   = 1 - textP;
+    const textTranslate = textP * -60; // drifts 60px upward
+
+    heroInner.style.opacity   = textOpacity;
+    heroInner.style.transform = `translateY(${textTranslate}px) translateZ(0)`;
+
+    // ── 2. BG: starts fading later (25 %), gone by 90 %
+    const bgStart = h * 0.25;
+    const bgEnd   = h * 0.90;
+    const bgP = Math.min(Math.max((y - bgStart) / (bgEnd - bgStart), 0), 1);
+    const bgOpacity = 1 - bgP;
+
+    heroBg.style.opacity = bgOpacity;
+
+    // ── 3. Hide/show the fixed bg only while hero is on screen
+    //    (avoids it bleeding over other sections after it fades)
+    heroBg.style.pointerEvents = bgOpacity <= 0 ? 'none' : '';
+    heroBg.style.visibility    = bgOpacity <= 0 ? 'hidden' : 'visible';
+  }
+
+  window.addEventListener('scroll', onScroll, { passive: true });
+  // Also re-run on resize (hero height may change)
+  window.addEventListener('resize', onScroll, { passive: true });
+  onScroll(); // init state
+})();
 </script>
-</body>
-</html>
+
+
+</body></html>
