@@ -1050,6 +1050,10 @@ function openTerms(type){
 function closeTermsModal(e){if(e.target===document.getElementById('terms-modal'))document.getElementById('terms-modal').classList.remove('open')}
 
 // CART
+function escapeHtml(s){
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 let cart=[],currentModal=null;
 
 function addToCart(item){
@@ -1702,10 +1706,6 @@ function showWelcome(){
     kg: 'Саламатсызбы! Мен KG Silkroad ассистентимин. 👋\n\nМен жардам бере алам:\n• Продуктылар жана бренддер жөнүндө\n• Заказ шарттары\n• Баалар жана каталог\n\nЭмне кызыктырат?'
   };
   addMsg('bot', welcomes[aiLang] || welcomes.ru);
-}
-
-function escapeHtml(s){
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function addMsg(role, text){
