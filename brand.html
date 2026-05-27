@@ -11,6 +11,21 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title id="page-title">Бренд — KG Silkroad</title>
+<meta id="meta-description" name="description" content="Wholesale vitamins and sports nutrition from top US brands. KG Silkroad — оптовый дистрибьютор в СНГ.">
+<meta name="keywords" content="vitamins wholesale, sports nutrition wholesale, supplement brands CIS, оптовые витамины СНГ">
+<link id="canonical" rel="canonical" href="https://kgsilkroad.com/vitamins.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="KG Silkroad Inc.">
+<meta id="og-title" property="og:title" content="Brand — KG Silkroad Inc.">
+<meta id="og-description" property="og:description" content="Wholesale vitamins and sports nutrition — KG Silkroad.">
+<meta id="og-url" property="og:url" content="https://kgsilkroad.com/vitamins.html">
+<meta property="og:image" content="https://kgsilkroad.com/images/BPC-157_TB-500_BLEND__WOLVERINE_BLEND_09.png">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:locale:alternate" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta id="tw-title" name="twitter:title" content="Brand — KG Silkroad Inc.">
+<meta id="tw-description" name="twitter:description" content="Wholesale vitamins and sports nutrition — KG Silkroad.">
+<meta name="twitter:image" content="https://kgsilkroad.com/images/BPC-157_TB-500_BLEND__WOLVERINE_BLEND_09.png">
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{--deep:#0f1f16;--forest:#182d20;--gold:#C4973A;--gold-l:#d4a84a;--gold-dim:rgba(196,151,58,0.12);--emerald:#1F6B45;--parchment:#F3EDE0}
@@ -207,8 +222,18 @@ function setLang(lang){document.documentElement.setAttribute('data-lang',lang)}
     document.getElementById('brand-title').textContent = 'Бренд не найден';
     return;
   }
-  document.title = brandName + ' — KG Silkroad';
+  document.title = brandName + ' Wholesale | KG Silkroad Inc.';
   document.getElementById('brand-title').textContent = brandName;
+  const brandDesc = brandName + ' — оптовые товары из США. Wholesale ' + brandName + ' products. KG Silkroad distributor CIS.';
+  const brandUrl = 'https://kgsilkroad.com/brand.html?brand=' + encodeURIComponent(brandName);
+  document.getElementById('page-title').textContent = brandName + ' Wholesale | KG Silkroad Inc.';
+  document.getElementById('meta-description').setAttribute('content', brandDesc);
+  document.getElementById('canonical').setAttribute('href', brandUrl);
+  document.getElementById('og-title').setAttribute('content', brandName + ' Wholesale | KG Silkroad Inc.');
+  document.getElementById('og-description').setAttribute('content', brandDesc);
+  document.getElementById('og-url').setAttribute('content', brandUrl);
+  document.getElementById('tw-title').setAttribute('content', brandName + ' Wholesale | KG Silkroad Inc.');
+  document.getElementById('tw-description').setAttribute('content', brandDesc);
   allProds = BRANDS_DATA[brandName] || [];
   const withPrice = allProds.filter(p=>p.p && parseFloat(p.p.replace('$',''))>0);
   document.getElementById('brand-stats').textContent = `${allProds.length} позиций · ${withPrice.length} с ценой`;
