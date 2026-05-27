@@ -242,6 +242,11 @@ footer{background:rgba(0,0,0,0.44);padding:44px 40px;border-top:1px solid rgba(1
 .ci-price{font-family:'Cormorant Garamond',serif;font-size:0.95rem;color:var(--gold)}
 .ci-remove{background:none;border:none;color:var(--parchment);opacity:0.25;cursor:pointer;font-size:0.95rem;padding:0;transition:opacity 0.2s;flex-shrink:0}
 .ci-remove:hover{opacity:0.7}
+.ci-bottom{display:flex;align-items:center;justify-content:space-between;margin-top:7px;gap:8px}
+.ci-qty-wrap{display:flex;align-items:center}
+.ci-qty-btn{background:none;border:1px solid rgba(196,151,58,0.25);color:var(--gold);width:24px;height:24px;cursor:pointer;font-size:1rem;line-height:1;display:flex;align-items:center;justify-content:center;transition:all 0.2s;flex-shrink:0;padding:0}
+.ci-qty-btn:hover{background:rgba(196,151,58,0.15);border-color:rgba(196,151,58,0.5)}
+.ci-qty-num{min-width:30px;text-align:center;font-size:0.8rem;letter-spacing:0.05em;padding:0 2px}
 .cart-footer{padding:18px 24px 24px;border-top:1px solid rgba(196,151,58,0.09)}
 .cart-total{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
 .ct-lbl{font-size:0.66rem;letter-spacing:0.14em;text-transform:uppercase;opacity:0.42}
@@ -1067,12 +1072,24 @@ function updateCart(){
   else{
     empty.style.display='none';
     items.querySelectorAll('.cart-item').forEach(el=>el.remove());
-    cart.forEach(item=>{
+    cart.forEach((item,i)=>{
+      const qty=item.qty||1;
       const div=document.createElement('div');div.className='cart-item';
-      div.innerHTML=`<div class="ci-info"><div class="ci-name">${item.name}${item.qty>1?` ×${item.qty}`:''}</div><div class="ci-price">$${(item.price*(item.qty||1)).toFixed(2)}</div></div><button class="ci-remove" onclick="removeFromCart('${item.name.replace(/'/g,"\\'")}')">×</button>`;
+      div.innerHTML=`<div class="ci-info"><div class="ci-name">${escapeHtml(item.name)}</div><div class="ci-bottom"><div class="ci-qty-wrap"><button class="ci-qty-btn" onclick="setCartQty(${i},-1)">−</button><span class="ci-qty-num">${qty}</span><button class="ci-qty-btn" onclick="setCartQty(${i},1)">+</button></div><div class="ci-price">$${(item.price*qty).toFixed(2)}</div></div></div><button class="ci-remove" onclick="removeFromCartIdx(${i})">×</button>`;
       items.appendChild(div);
     });
   }
+}
+
+function setCartQty(idx,delta){
+  if(!cart[idx])return;
+  cart[idx].qty=Math.max(1,(cart[idx].qty||1)+delta);
+  updateCart();
+}
+
+function removeFromCartIdx(idx){
+  cart.splice(idx,1);
+  updateCart();
 }
 
 function toggleCart(){document.getElementById('cart-drawer').classList.toggle('open')}
