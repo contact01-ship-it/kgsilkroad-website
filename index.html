@@ -1083,10 +1083,17 @@ function submitRequest(){
   if(!name||!phone){alert('Пожалуйста, заполните имя и телефон');return}
   const company=document.getElementById('req-company').value;
   const email=document.getElementById('req-email').value;
+  const total=cart.reduce((a,c)=>a+c.price*(c.qty||1),0).toFixed(2);
   let msg=`Запрос с сайта KG Silkroad:\n\nИмя: ${name}\nКомпания: ${company}\nТелефон: ${phone}\nEmail: ${email}\n\nТовары:\n`;
   cart.forEach(item=>{msg+=`- ${item.name} ×${item.qty||1}: $${(item.price*(item.qty||1)).toFixed(2)}\n`});
-  msg+=`\nИтого (без логистики): $${cart.reduce((a,c)=>a+c.price*(c.qty||1),0).toFixed(2)}`;
+  msg+=`\nИтого (без логистики): $${total}`;
   window.open(`https://wa.me/12677730711?text=${encodeURIComponent(msg)}`,'_blank');
+  // Telegram notification (fire-and-forget)
+  fetch('https://anthropic-proxy.kgsilkroad.workers.dev/telegram',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name,phone,email,company,items:cart.map(c=>({name:c.name,price:c.price,qty:c.qty||1})),total})
+  }).catch(()=>{});
   document.getElementById('success-msg').classList.add('show');
   setTimeout(()=>document.getElementById('success-msg').classList.remove('show'),5000);
 }
