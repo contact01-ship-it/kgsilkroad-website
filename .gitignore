@@ -13,3 +13,8 @@ __pycache__/
 # Temp files
 /tmp/
 *.tmp
+.gstack/
+
+# OS / editor
+.DS_Store
+.claude/

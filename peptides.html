@@ -156,6 +156,34 @@ html[data-lang="ru"] [data-en]{display:none}
 }
 @keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-track{background:var(--forest)}::-webkit-scrollbar-thumb{background:rgba(196,151,58,0.3)}
+
+/* MOQ CONDITIONS STRIP */
+.moq-strip{background:rgba(0,0,0,0.22);border-top:1px solid rgba(196,151,58,0.12);border-bottom:1px solid rgba(196,151,58,0.12);padding:22px 40px 20px}
+.moq-header{font-size:0.57rem;letter-spacing:0.22em;text-transform:uppercase;color:var(--gold);opacity:0.5;margin-bottom:16px;display:flex;align-items:center;gap:10px}
+.moq-header::after{content:'';flex:1;height:1px;background:rgba(196,151,58,0.12)}
+.moq-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0}
+.moq-item{padding:0 22px;border-right:1px solid rgba(196,151,58,0.1)}
+.moq-item:first-child{padding-left:0}
+.moq-item:last-child{border-right:none}
+.moq-val{font-family:'Cormorant Garamond',serif;font-size:1.45rem;font-weight:600;color:var(--gold);line-height:1;margin-bottom:3px}
+.moq-lbl{font-size:0.6rem;letter-spacing:0.12em;text-transform:uppercase;opacity:0.38;margin-bottom:2px}
+.moq-desc{font-size:0.72rem;opacity:0.5;line-height:1.5}
+.moq-divider{height:1px;background:rgba(196,151,58,0.08);margin:16px 0}
+.moq-pkg-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.moq-pkg-lbl{font-size:0.58rem;letter-spacing:0.16em;text-transform:uppercase;opacity:0.35;flex-shrink:0}
+.moq-pill{font-size:0.68rem;letter-spacing:0.06em;padding:4px 12px;border:1px solid rgba(196,151,58,0.22);color:var(--parchment);opacity:0.7}
+.moq-pill.highlight{border-color:rgba(196,151,58,0.45);color:var(--gold);opacity:1}
+.moq-pill-note{font-size:0.65rem;opacity:0.35;font-style:italic}
+@media(max-width:900px){
+  .moq-strip{padding:18px 24px 16px}
+  .moq-grid{grid-template-columns:repeat(2,1fr);gap:16px}
+  .moq-item{border-right:none;padding-left:0}
+  .moq-item:nth-child(odd){border-right:1px solid rgba(196,151,58,0.1);padding-right:16px}
+}
+@media(max-width:600px){
+  .moq-grid{grid-template-columns:1fr 1fr}
+  .moq-item:nth-child(odd){border-right:1px solid rgba(196,151,58,0.1)}
+}
 </style>
 </head>
 <body>
@@ -184,6 +212,43 @@ html[data-lang="ru"] [data-en]{display:none}
   <div class="s-label"><span data-ru>Пептиды · США</span><span data-en>Peptides · USA</span></div>
   <h1><span data-ru>Каталог пептидов</span><span data-en>Peptide Catalog</span></h1>
   <p class="page-sub"><span data-ru>59 позиций. Производство США. Чистота ≥98%. Цены за единицу при минимальном заказе.</span><span data-en>59 items. Made in USA. Purity ≥98%. Prices per unit at minimum order.</span></p>
+</div>
+
+<!-- MOQ CONDITIONS STRIP -->
+<div class="moq-strip">
+  <div class="moq-header">
+    <span data-ru>Условия заказа</span><span data-en>Order Conditions</span>
+  </div>
+  <div class="moq-grid">
+    <div class="moq-item">
+      <div class="moq-lbl"><span data-ru>Минимальный заказ</span><span data-en>Min. order</span></div>
+      <div class="moq-val">20</div>
+      <div class="moq-desc"><span data-ru>единиц суммарно</span><span data-en>units total</span></div>
+    </div>
+    <div class="moq-item">
+      <div class="moq-lbl"><span data-ru>Минимум на позицию</span><span data-en>Per SKU min.</span></div>
+      <div class="moq-val">5</div>
+      <div class="moq-desc"><span data-ru>единиц на артикул</span><span data-en>units per item</span></div>
+    </div>
+    <div class="moq-item">
+      <div class="moq-lbl"><span data-ru>Отгрузка из США</span><span data-en>Ships from USA</span></div>
+      <div class="moq-val">1–2</div>
+      <div class="moq-desc"><span data-ru>дня после оплаты</span><span data-en>days after order</span></div>
+    </div>
+    <div class="moq-item">
+      <div class="moq-lbl"><span data-ru>Доставка в СНГ</span><span data-en>CIS delivery</span></div>
+      <div class="moq-val">2–3</div>
+      <div class="moq-desc"><span data-ru>недели с момента отгрузки производителем</span><span data-en>weeks from manufacturer dispatch</span></div>
+    </div>
+  </div>
+  <div class="moq-divider"></div>
+  <div class="moq-pkg-row">
+    <span class="moq-pkg-lbl"><span data-ru>Упаковка</span><span data-en>Packaging</span></span>
+    <span class="moq-pill"><span data-ru>Без этикетки</span><span data-en>Naked</span></span>
+    <span class="moq-pill"><span data-ru>Генерик-этикетка</span><span data-en>Generic Label</span></span>
+    <span class="moq-pill highlight"><span data-ru>Частная марка</span><span data-en>Private Label</span></span>
+    <span class="moq-pill-note"><span data-ru>— лого при оформлении заказа</span><span data-en>— submit logo at order</span></span>
+  </div>
 </div>
 
 <div class="controls">
